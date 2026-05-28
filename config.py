@@ -26,6 +26,8 @@ RFC_NUMBERS = [
     4474, 7340, 8760,
     # Additional (originally indexed)
     3711, 3665, 3428, 5630, 5922, 5923, 4572, 6904,
+    # DTMF & INFO
+    4733, 6086,
 ]
 
 # Characters per chunk (~500 tokens) and overlap
@@ -459,6 +461,47 @@ RFC_META = {
             "extmap attribute — a=extmap in SDP for header extension mapping",
             "header extension confidentiality in SRTP",
             "cryptographic protection of RTP extension header content",
+        ],
+    },
+    # ── DTMF & INFO ───────────────────────────────────────────────────────────
+    4733: {
+        "title": "RTP Payload for DTMF Digits, Telephony Tones and Signals",
+        "topics": [
+            "telephone-event RTP payload type — in-band DTMF over RTP",
+            "payload type 101 — dynamic payload type for telephone-event",
+            "a=rtpmap:101 telephone-event/8000 — SDP mapping for DTMF",
+            "a=fmtp:101 0-16 — DTMF digit range in SDP format parameters",
+            "DTMF digit encoding: 0–9, *, #, A–D (events 0–15)",
+            "telephone-event packet format: Event, End bit (E), Volume, Duration",
+            "End bit (E) — signals last packet of a DTMF event",
+            "Volume field — signal power level in dBm0",
+            "Duration field — event duration in RTP timestamp units",
+            "DTMF packet redundancy — sending end packets multiple times for reliability",
+            "marker bit — set on first packet of each telephony event",
+            "named telephony events — dial tone, busy tone, ringback",
+            "RFC 4733 obsoletes RFC 2833",
+            "DTMF relay vs. DTMF passthrough",
+            "in-band DTMF vs. out-of-band DTMF",
+        ],
+    },
+    6086: {
+        "title": "SIP INFO Method and Package Framework",
+        "topics": [
+            "INFO method — mid-dialog SIP request for application-level information",
+            "SIP INFO package framework — structured mechanism for INFO content",
+            "Info-Package header — identifies the INFO package in a request",
+            "Recv-Info header — advertises supported INFO packages",
+            "Content-Disposition: Info-Package — MIME disposition for INFO body",
+            "DTMF via SIP INFO — application/dtmf and application/dtmf-relay content types",
+            "application/dtmf MIME type — single DTMF digit body",
+            "application/dtmf-relay MIME type — Signal and Duration fields",
+            "Signal field — DTMF digit (0–9, *, #, A–D) in INFO body",
+            "Duration field — DTMF tone duration in milliseconds in INFO body",
+            "INFO package IANA registration",
+            "RFC 6086 obsoletes RFC 2976",
+            "mid-dialog INFO — must be within an established dialog",
+            "200 OK response to INFO — acknowledgement of receipt",
+            "SIP INFO vs. RFC 4733 telephone-event for DTMF transport",
         ],
     },
 }

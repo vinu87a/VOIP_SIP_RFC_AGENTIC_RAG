@@ -157,7 +157,7 @@ Six tools the LLM can invoke. Each tool is defined twice:
 ### 4.4 Prompt System (`agent/prompts.py`)
 
 A single large `SYSTEM_PROMPT` string injected as the first `SystemMessage`. It defines:
-- The agent's persona and knowledge scope (23 RFCs listed)
+- The agent's persona and knowledge scope (25 RFCs listed)
 - Tool descriptions and when to use each
 - A **Trace Diagnosis Playbook** with step-by-step procedures for 488, 401/407, 503, 486/480
 - **Response Formatting rules** (headings, bold, underline, citations, follow-up questions)
@@ -181,7 +181,7 @@ Responsible for populating the vector store. Five sub-modules:
 
 | Module | Role |
 |--------|------|
-| `rfc_fetcher.py` | Downloads 23 RFCs from rfc-editor.org with disk caching |
+| `rfc_fetcher.py` | Downloads 25 RFCs from rfc-editor.org with disk caching |
 | `rfc_chunker.py` | Parses RFC text into sections, chunks with overlap |
 | `iana_sip_ingest.py` | Fetches IANA SIP Parameters registry |
 | `sip_glossary_ingest.py` | Embeds a static 167-term SIP/VoIP glossary CSV |
@@ -222,7 +222,7 @@ Central configuration file. Key settings:
   ──────────────                   ──────────           ────────
   RFC 3261 .txt ──► fetch_rfc() ──► rfc3261.txt ──►  chunk_rfc()
   RFC 3550 .txt ──► fetch_rfc() ──► rfc3550.txt ──►  chunk_rfc()
-  ... (23 RFCs) ──► fetch_rfc() ──► rfc????.txt ──►  chunk_rfc()
+  ... (25 RFCs) ──► fetch_rfc() ──► rfc????.txt ──►  chunk_rfc()
                                                            │
   iana.org ────────────────────────► fetch_iana_sip_chunks()
   wikipedia.org ───────────────────► fetch_wikipedia_sip_chunks()

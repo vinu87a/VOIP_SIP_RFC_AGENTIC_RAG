@@ -87,7 +87,7 @@ app.py
 | `EMBEDDING_MODEL` | `str` | `"all-MiniLM-L6-v2"` | SentenceTransformers model for ChromaDB |
 | `CHROMA_PERSIST_DIR` | `str` | `<project_root>/chroma_db` | ChromaDB on-disk storage path |
 | `RFC_CACHE_DIR` | `str` | `<project_root>/rfc_cache` | Local cache for downloaded RFC `.txt` files |
-| `RFC_NUMBERS` | `List[int]` | 23 integers | RFCs to index into the knowledge base |
+| `RFC_NUMBERS` | `List[int]` | 25 integers | RFCs to index into the knowledge base |
 | `CHUNK_SIZE` | `int` | `2000` | Max characters per RFC chunk (~500 tokens) |
 | `CHUNK_OVERLAP` | `int` | `300` | Overlap between consecutive RFC chunks |
 | `TOP_K` | `int` | `6` | Default number of search results returned |
@@ -106,7 +106,7 @@ RFC_META = {
             # ... ~50 topic strings
         ]
     },
-    # ... 22 more RFCs
+    # ... 24 more RFCs
 }
 ```
 
@@ -210,7 +210,7 @@ Upserts RFC chunks in batches of 500 to respect ChromaDB limits.
 
 Uses `upsert` (not `add`) so re-indexing is idempotent — running twice does not duplicate chunks.
 
-After upserting, sets `self._bm25_index = None` to **invalidate** the in-memory BM25 index. The index is rebuilt lazily on the next `search_rfc` call, ensuring it reflects all newly added chunks without rebuilding 23 times during the initial ingest of 23 RFCs.
+After upserting, sets `self._bm25_index = None` to **invalidate** the in-memory BM25 index. The index is rebuilt lazily on the next `search_rfc` call, ensuring it reflects all newly added chunks without rebuilding 25 times during the initial ingest of 25 RFCs.
 
 #### BM25 Index Methods
 
@@ -1207,7 +1207,7 @@ Called on every app startup if `vs.rfc_count() == 0`. Runs the full RFC indexing
 
 ```
 Step 1: Prepare RFC cache directory
-Step 2: Download 23 RFCs (fetch_all_rfcs)
+Step 2: Download 25 RFCs (fetch_all_rfcs)
 Step 3: Parse and chunk RFC text (chunk_rfc per RFC)
 Step 4: Embed and index chunks (vs.add_rfc_chunks) ← slowest step; shows timing note
 Step 5: Finalise — log total chunk count

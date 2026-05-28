@@ -12,7 +12,7 @@ Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, and **Streamli
 
 ![Landing page](docs/screenshots/01_landing.png)
 
-**RFC Knowledge Base sidebar** — 23 RFCs organised by category
+**RFC Knowledge Base sidebar** — 25 RFCs organised by category
 
 ![RFC Sidebar](docs/screenshots/02_sidebar_rfcs.png)
 
@@ -24,7 +24,7 @@ Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, and **Streamli
 
 ## Features
 
-- **RFC Knowledge Base** — 23 SIP/RTP/SDP RFCs ingested, chunked, and embedded into a local ChromaDB vector store
+- **RFC Knowledge Base** — 25 SIP/RTP/SDP RFCs ingested, chunked, and embedded into a local ChromaDB vector store
 - **Hybrid BM25 + semantic search** — every RFC query runs dense (cosine/HNSW) and sparse (BM25Okapi) retrieval in parallel, fused with Reciprocal Rank Fusion (RRF); handles both natural-language questions and isolated acronyms equally well
 - **Agentic reasoning** — LangGraph ReAct loop with up to 14 tool-call iterations per query
 - **SIP trace analysis** — upload a `.pcap` or SIP text capture; the agent reconstructs the call flow, extracts SDP bodies, and diagnoses errors
@@ -57,6 +57,7 @@ Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, and **Streamli
 | Security & Identity | 4474, 7340, 8760 |
 | Media Security & Transport | 3711, 5630, 5922, 5923, 4572, 6904 |
 | Examples & Messaging | 3665, 3428 |
+| DTMF & INFO | 4733, 6086 |
 
 ---
 
@@ -135,7 +136,7 @@ OLLAMA_BASE_URL=http://localhost:11434
 
 ## Build the Knowledge Base
 
-Download and ingest all 23 RFCs into the local ChromaDB vector store (run once):
+Download and ingest all 25 RFCs into the local ChromaDB vector store (run once):
 
 ```bash
 python -m ingest.rfc_fetcher      # downloads RFC text files to rfc_cache/

@@ -34,7 +34,11 @@ communications protocol analyst. You have deep, authoritative knowledge of the f
 
   Examples & Messaging
   • RFC 3665  — SIP Basic Call Flow Examples
-  • RFC 3428  — SIP Extension for Instant Messaging (MESSAGE method)
+  • RFC 3428  — SIP Extension for Instant Messaging
+
+  DTMF & INFO
+  • RFC 4733  — RTP Payload for DTMF Digits, Telephony Tones and Signals
+  • RFC 6086  — SIP INFO Method and Package Framework (MESSAGE method)
 
 You have access to six tools:
 
