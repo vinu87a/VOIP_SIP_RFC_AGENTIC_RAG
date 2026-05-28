@@ -365,29 +365,67 @@ def _make_arrow_line(src_idx: int, dst_idx: int, label: str,
 
 
 def _make_rtp_bar(rtp_text: str, n_cols: int, col_w: int) -> str:
-    """Full-width ═ bar summarising one RTP stream, with key stats in the centre."""
-    ssrc_m  = re.search(r"SSRC=(0x[0-9A-Fa-f]+)",               rtp_text)
-    codec_m = re.search(r"Payload Type\s*:\s*\d+\s*\(([^)]+)\)", rtp_text)
-    dur_m   = re.search(r"Duration\s*:\s*~?([^\n]+)",            rtp_text)
-    pkts_m  = re.search(r"Packets\s*:\s*(\d+)",                  rtp_text)
+    """
+    Bidirectional RTP bar spanning between the leftmost and rightmost column
+    pipes — same width as the SIP message arrows.  Uses '~' fill with '<' '>'
+    arrowheads to represent duplex media flow.  Label verbosity drops
+    automatically so it always fits within the available span.
+    """
+    # Greedy match handles codec names that contain nested parentheses,
+    # e.g. "PCMA — G.711 A-law (8 kHz)"
+    ssrc_m  = re.search(r"SSRC=(0x[0-9A-Fa-f]+)",            rtp_text)
+    codec_m = re.search(r"Payload Type\s*:\s*\d+\s*\((.+)\)", rtp_text)
+    dur_m   = re.search(r"Duration\s*:\s*~?([0-9.]+)",        rtp_text)
+    pkts_m  = re.search(r"Packets\s*:\s*(\d+)",               rtp_text)
 
-    codec = codec_m.group(1).strip() if codec_m else "RTP"
-    ssrc  = ssrc_m.group(1)          if ssrc_m  else "?"
-    dur   = dur_m.group(1).strip()[:14] if dur_m else ""
-    pkts  = pkts_m.group(1)             if pkts_m else ""
-
-    parts = [f"RTP ▸ {codec}", f"SSRC {ssrc}"]
-    if dur:  parts.append(f"~{dur}")
-    if pkts: parts.append(f"{pkts} pkts")
-    info  = "  ".join(parts)
+    raw_codec = codec_m.group(1).strip() if codec_m else "RTP"
+    # Use the short form after "—" when present (e.g. "G.711 A-law" not "PCMA — G.711 A-law")
+    codec = raw_codec.split("—")[-1].strip() if "—" in raw_codec else raw_codec
+    ssrc  = ssrc_m.group(1)       if ssrc_m else "?"
+    dur   = f"{dur_m.group(1)}s"  if dur_m  else ""
+    pkts  = pkts_m.group(1)       if pkts_m else ""
 
     total = n_cols * col_w
-    bar   = list("═" * total)
-    start = max(1, total // 2 - len(info) // 2)
-    for j, ch in enumerate(info):
-        if start + j < total - 1:
-            bar[start + j] = ch
-    return "".join(bar)
+    buf   = list(" " * total)
+
+    # Vertical pipes at all column centers
+    for i in range(n_cols):
+        buf[i * col_w + col_w // 2] = "|"
+
+    lc    = col_w // 2                              # leftmost column centre
+    rc    = (n_cols - 1) * col_w + col_w // 2       # rightmost column centre
+    avail = rc - lc - 4                             # chars between arrowheads
+
+    # Choose most verbose label that fits
+    candidates = [
+        f"{codec}  SSRC:{ssrc}  ~{dur}  {pkts}pkts",
+        f"{codec}  SSRC:{ssrc}  ~{dur}",
+        f"{codec}  SSRC:{ssrc}",
+        codec,
+    ]
+    info = next((c for c in candidates if len(c) <= avail), codec[:avail])
+
+    # Fill span with ~ (overwrites intermediate column pipes)
+    for pos in range(lc + 1, rc):
+        buf[pos] = "~"
+
+    # Bidirectional arrowheads
+    buf[lc + 1] = "<"
+    buf[rc - 1] = ">"
+
+    # Centre the label inside the span
+    if info and avail > 0:
+        mid   = (lc + rc) // 2
+        start = max(lc + 2, mid - len(info) // 2)
+        start = min(start, rc - 2 - len(info))
+        for j, ch in enumerate(info):
+            buf[start + j] = ch
+
+    # Re-draw arrowheads (label may have overwritten them)
+    buf[lc + 1] = "<"
+    buf[rc - 1] = ">"
+
+    return "".join(buf)
 
 
 def _reconstruct_call_flow(args: Dict, vs) -> Dict:
