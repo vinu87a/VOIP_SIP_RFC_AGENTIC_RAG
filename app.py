@@ -673,7 +673,7 @@ def _ensure_rfc_index(vs) -> None:
     with st.status("🔄 Building RFC knowledge base…", expanded=True) as status:
 
         # ── Step 1: Download RFCs ─────────────────────────────────────────────
-        status.write("📥 **Step 1 / 5** — Downloading 23 RFCs from rfc-editor.org…")
+        status.write("📥 **Step 1 / 5** — Downloading 25 RFCs from rfc-editor.org…")
         rfcs = fetch_all_rfcs()
         status.write(f"  ✅ Downloaded {len(rfcs)} RFCs")
 
@@ -719,7 +719,7 @@ def _ensure_rfc_index(vs) -> None:
         vs.add_rfc_chunks(all_chunks)
 
         status.update(
-            label=f"✅ Knowledge base ready — {len(all_chunks):,} chunks across 23 RFCs + IANA + Wikipedia + Glossary",
+            label=f"✅ Knowledge base ready — {len(all_chunks):,} chunks across 25 RFCs + IANA + Wikipedia + Glossary",
             state="complete",
             expanded=False,
         )
@@ -853,7 +853,7 @@ def _render_sidebar(vs):
         st.markdown(f"""
 <div class="stats-row">
   <span class="stat-chip sc-purple">📄 {rfc_chunk_count:,} RFC chunks</span>
-  <span class="stat-chip sc-green">🏛️ 23 RFCs</span>
+  <span class="stat-chip sc-green">🏛️ 25 RFCs</span>
   <span class="stat-chip sc-cyan">🔡 MiniLM-L6</span>
 </div>
 """, unsafe_allow_html=True)
@@ -1052,10 +1052,10 @@ def _render_welcome():
   <div class="hero-title">📡 SIP / RTP Protocol Assistant</div>
   <div class="hero-sub">
     Deep-dive analysis of SIP signaling, RTP media, SRTP security, and SDP negotiation —
-    grounded in 23 RFC specifications and your uploaded traces.
+    grounded in 25 RFC specifications and your uploaded traces.
   </div>
   <div class="hero-badges">
-    <span class="hb hb-purple">🏛️ 23 RFCs indexed</span>
+    <span class="hb hb-purple">🏛️ 25 RFCs indexed</span>
     <span class="hb hb-cyan">🔐 SRTP &amp; TLS</span>
     <span class="hb hb-green">📡 Trace analysis</span>
     <span class="hb hb-amber">⚡ Groq LLM</span>
