@@ -468,20 +468,27 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
 
     def _fmt_ts(raw: str) -> str:
         """
-        Convert a raw timestamp value to HH:MM:SS.mmm for ladder display.
-        Accepts: Unix float string (PCAP), ISO datetime string, or HH:MM:SS string.
-        Returns '' if no timestamp available.
+        Convert a raw timestamp to HH:MM:SS.mmm for ladder display.
+        Accepts: Unix epoch float string (PCAP), RFC 2822 Date header string,
+        ISO / sngrep datetime string, or plain HH:MM:SS.  Returns '' on failure.
         """
         if not raw:
             return ""
-        # Unix epoch float (from PCAP)
+        # Unix epoch float  (PCAP — e.g. "1748447618.123456")
         try:
             import datetime
             dt = datetime.datetime.fromtimestamp(float(raw))
             return f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}.{dt.microsecond // 1000:03d}"
         except (ValueError, TypeError, OSError):
             pass
-        # Extract HH:MM:SS[.ms] from an already-formatted string
+        # RFC 2822  (SIP Date: header — e.g. "Mon, 15 Jan 2024 10:23:45 GMT")
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(raw)
+            return f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}.000"
+        except Exception:
+            pass
+        # Extract HH:MM:SS[.ms] from any other formatted string
         m_ts = re.search(r'\d{1,2}:\d{2}:\d{2}(?:[.,]\d{1,6})?', raw)
         if m_ts:
             raw_t = m_ts.group().replace(",", ".")
@@ -491,7 +498,7 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
             return f"{int(h):02d}:{int(mi):02d}:{int(s):02d}.{ms}"
         return ""
 
-    _TS_W = 14   # "HH:MM:SS.mmm  " — 12 chars + 2 spaces
+    _TS_W = 14   # prefix column width: "HH:MM:SS.mmm  " or "  #N          "
 
     flows = []
     for cid, msgs in dialogs.items():
@@ -512,7 +519,9 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
         col_w = max(20, min(36, 80 // n))
 
         # ── Build ASCII ladder ─────────────────────────────────────────────────
-        # Each row is (timestamp_str, diagram_line); '' timestamp = no stamp.
+        # Rows are (prefix, diagram_line) where prefix is:
+        #   None  → structural row (header / separator / RTP bar) — no numbering
+        #   str   → message row; non-empty = real timestamp, '' = no timestamp
         rows: List[tuple] = []
 
         # Header: endpoint labels (role + IP)
@@ -524,9 +533,9 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
                 r = label_rows[col_i]
                 text = r[row_i] if row_i < len(r) else ""
                 parts.append(f"{text:^{col_w}}")
-            rows.append(("", "".join(parts)))
+            rows.append((None, "".join(parts)))          # structural
 
-        rows.append(("", "".join("|".center(col_w) for _ in range(n))))
+        rows.append((None, "".join("|".center(col_w) for _ in range(n))))  # structural
 
         # Position of the last ACK — RTP bars inserted after it
         ack_pos = None
@@ -556,27 +565,40 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
             src_idx = seen_ips.index(src_ip) if src_ip in seen_ips else 0
             dst_idx = seen_ips.index(dst_ip) if dst_ip in seen_ips else n - 1
 
-            rows.append((ts, _make_arrow_line(src_idx, dst_idx, label, n, col_w)))
+            rows.append((ts, _make_arrow_line(src_idx, dst_idx, label, n, col_w)))  # message
 
             # Insert RTP bars right after the final ACK
             if i == ack_pos and not rtp_inserted and rtp_streams:
                 for rtp in rtp_streams:
-                    rows.append(("", _make_rtp_bar(rtp.get("text", ""), n, col_w)))
+                    rows.append((None, _make_rtp_bar(rtp.get("text", ""), n, col_w)))  # structural
                 rtp_inserted = True
 
         if not rtp_inserted and rtp_streams:
             for rtp in rtp_streams:
-                rows.append(("", _make_rtp_bar(rtp.get("text", ""), n, col_w)))
+                rows.append((None, _make_rtp_bar(rtp.get("text", ""), n, col_w)))     # structural
 
-        # Prepend timestamps if any message has one
-        has_ts = any(ts for ts, _ in rows)
+        # ── Prepend prefix column ──────────────────────────────────────────────
+        # Real timestamps if available; otherwise message sequence numbers (#N).
+        has_ts  = any(pfx is not None and pfx != "" for pfx, _ in rows)
+        blank   = " " * _TS_W
+
         if has_ts:
+            # Timestamp column: "HH:MM:SS.mmm  " or spaces for structural rows
             ladder = [
-                f"{ts:<12}  {line}" if ts else f"{' ' * _TS_W}{line}"
-                for ts, line in rows
+                f"{pfx:<12}  {line}" if (pfx is not None and pfx) else f"{blank}{line}"
+                for pfx, line in rows
             ]
         else:
-            ladder = [line for _, line in rows]
+            # No timestamps — use "#N" message sequence numbers instead
+            msg_num = 0
+            ladder  = []
+            for pfx, line in rows:
+                if pfx is None:
+                    ladder.append(f"{blank}{line}")        # structural: indent only
+                else:
+                    msg_num += 1
+                    num = f"#{msg_num}"
+                    ladder.append(f"{num:>4}          {line}")   # "#N" right-aligned
 
         # Pre-join the ladder into a single string so the LLM can paste it
         # directly into a fenced code block without parsing the list.

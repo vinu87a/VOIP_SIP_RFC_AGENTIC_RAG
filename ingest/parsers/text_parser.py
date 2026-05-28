@@ -120,11 +120,14 @@ def parse_text_trace(content: str) -> List[Dict[str, Any]]:
             continue
         try:
             msg = build_message(seg)
-            # Look for a timestamp in the 300 chars immediately before this message
+            # 1. Look for a timestamp in the 300 chars immediately before this message
             preceding = content[max(0, start - 300):start]
             ts_hits = list(_TS_PATTERN.finditer(preceding))
             if ts_hits:
-                msg["timestamp"] = ts_hits[-1].group()   # closest match
+                msg["timestamp"] = ts_hits[-1].group()
+            # 2. Fall back to the SIP Date: header inside the message
+            elif msg.get("headers", {}).get("date"):
+                msg["timestamp"] = msg["headers"]["date"]
             messages.append(msg)
         except Exception as exc:
             logger.debug(f"Skipping segment (parse error): {exc}")
