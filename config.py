@@ -1,0 +1,464 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+# Ollama fallback — used when Groq returns HTTP 429 (rate limit)
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL",    "gemma4:e4b")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+CHROMA_PERSIST_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")
+RFC_CACHE_DIR = os.path.join(os.path.dirname(__file__), "rfc_cache")
+
+RFC_NUMBERS = [
+    # Core SIP Protocol
+    3261, 3263, 3264,
+    # Core VoIP Media & Transport
+    3550, 4566, 5939,
+    # Call Control, Routing & Events
+    3262, 3311, 3515, 6665, 3891, 4028,
+    # Security & Identity
+    4474, 7340, 8760,
+    # Additional (originally indexed)
+    3711, 3665, 3428, 5630, 5922, 5923, 4572, 6904,
+]
+
+# Characters per chunk (~500 tokens) and overlap
+CHUNK_SIZE = 2000
+CHUNK_OVERLAP = 300
+TOP_K = 6
+
+RFC_META = {
+    # ── Core SIP Protocol ─────────────────────────────────────────────────────
+    3261: {
+        "title": "SIP: Session Initiation Protocol",
+        "topics": [
+            # Protocol identity
+            "SIP (Session Initiation Protocol)",
+            # Roles / entities
+            "UAC (User Agent Client) — request originator",
+            "UAS (User Agent Server) — request responder",
+            "SIP proxy server — request forwarder",
+            "SIP registrar — endpoint registration server",
+            "SIP redirect server — returns 3xx contact",
+            "SIP location service",
+            # Methods
+            "INVITE method — call setup request",
+            "ACK method — acknowledgement for 2xx final response",
+            "BYE method — call termination",
+            "CANCEL method — cancel pending INVITE",
+            "REGISTER method — endpoint registration",
+            "OPTIONS method — capability inquiry",
+            # Core headers
+            "Via header — hop-by-hop routing and response path",
+            "Contact header — direct reachability URI",
+            "From header — logical originator address",
+            "To header — logical destination address",
+            "Call-ID header — globally unique dialog and transaction identifier",
+            "CSeq (Command Sequence) header — transaction ordering",
+            "Max-Forwards header — routing loop prevention",
+            "Record-Route header — proxy route recording",
+            "Route header — pre-loaded route set for mid-dialog requests",
+            "Supported header — capability advertisement",
+            "Require header — mandatory extension enforcement",
+            "Allow header — supported SIP methods list",
+            # Transactions and dialogs
+            "SIP transaction — client transaction and server transaction",
+            "SIP dialog — long-duration signaling relationship",
+            "early dialog — dialog established before 2xx",
+            "confirmed dialog — dialog after 200 OK to INVITE",
+            # Addressing
+            "SIP URI (sip:user@host)",
+            "SIPS URI (sips:user@host) — SIP over TLS",
+            # Response codes
+            "100 Trying — provisional, no retransmit",
+            "180 Ringing — provisional, destination alerting",
+            "183 Session Progress — provisional, early media",
+            "200 OK — success",
+            "301 Moved Permanently / 302 Moved Temporarily — redirect",
+            "401 Unauthorized — digest authentication challenge",
+            "403 Forbidden",
+            "404 Not Found",
+            "407 Proxy Authentication Required",
+            "408 Request Timeout",
+            "480 Temporarily Unavailable",
+            "486 Busy Here",
+            "487 Request Terminated",
+            "488 Not Acceptable Here — SDP mismatch",
+            "500 Server Internal Error",
+            "503 Service Unavailable",
+            "603 Decline",
+            # Authentication
+            "digest authentication — WWW-Authenticate and Authorization headers",
+            "registration and re-registration",
+        ],
+    },
+    3263: {
+        "title": "Session Initiation Protocol (SIP): Locating SIP Servers",
+        "topics": [
+            "DNS (Domain Name System) for SIP server discovery",
+            "SRV (Service Resource Record) — transport and port selection",
+            "NAPTR (Naming Authority Pointer) record — service discovery and ordering",
+            "FQDN (Fully Qualified Domain Name) resolution",
+            "transport protocol selection: UDP, TCP, TLS",
+            "SIP outbound proxy discovery",
+            "priority and weight in SRV records",
+            "numeric IP address handling",
+            "port resolution for SIP",
+            "_sip._udp / _sip._tcp / _sips._tcp SRV service labels",
+        ],
+    },
+    3264: {
+        "title": "An Offer/Answer Model with the Session Description Protocol (SDP)",
+        "topics": [
+            "SDP (Session Description Protocol) offer",
+            "SDP answer",
+            "offer/answer model for media negotiation",
+            "codec negotiation via SDP",
+            "m= (media description line) — type, port, transport, payload types",
+            "c= (connection data line) — IP address",
+            "a= (attribute line)",
+            "a=sendrecv — bidirectional media flow",
+            "a=sendonly — outbound-only media",
+            "a=recvonly — inbound-only media",
+            "a=inactive — no media flow (hold)",
+            "re-INVITE — mid-dialog SDP renegotiation",
+            "session hold and resume",
+            "rejected media stream — port 0 in answer",
+            "offer/answer in INVITE, re-INVITE, and UPDATE",
+        ],
+    },
+    # ── Core VoIP Media & Transport ───────────────────────────────────────────
+    3550: {
+        "title": "RTP: A Transport Protocol for Real-Time Applications",
+        "topics": [
+            "RTP (Real-time Transport Protocol)",
+            "RTCP (RTP Control Protocol)",
+            "SSRC (Synchronization Source Identifier) — unique stream ID",
+            "CSRC (Contributing Source) — list of contributing sources in mixing",
+            "RTP sequence number — packet ordering and loss detection",
+            "RTP timestamp — media playout timing",
+            "payload type (PT) — codec identifier in RTP header",
+            "jitter — inter-packet arrival time variation",
+            "packet loss",
+            "RTCP SR (Sender Report) — transmission and reception statistics",
+            "RTCP RR (Receiver Report) — reception quality from receiver",
+            "RTCP SDES (Source Description) — CNAME, NAME, EMAIL",
+            "RTCP BYE — stream termination signal",
+            "RTCP APP — application-defined RTCP packet",
+            "RTCP reporting interval",
+            "media synchronization across RTP streams",
+            "RTP multiplexing",
+            "RTP profile: RTP/AVP (Audio Visual Profile)",
+            "RTP profile: RTP/SAVP (Secure Audio Visual Profile)",
+            "RTP profile: RTP/AVPF (Audio Visual Profile with Feedback)",
+            "RTP profile: RTP/SAVPF (Secure AVPF)",
+        ],
+    },
+    4566: {
+        "title": "SDP: Session Description Protocol",
+        "topics": [
+            "SDP (Session Description Protocol)",
+            "v= (protocol version line)",
+            "o= (origin line) — username, session ID, version, network type, address",
+            "s= (session name line)",
+            "c= (connection data line) — IN IP4 / IN IP6 address",
+            "t= (timing line) — session start and stop time",
+            "m= (media line) — media type, port, transport protocol, payload type list",
+            "b= (bandwidth line) — AS (Application Specific), CT, TIAS bandwidth modifiers",
+            "a=rtpmap — RTP payload type number to codec name/rate mapping",
+            "a=fmtp (format parameters) — codec-specific configuration",
+            "a=ptime (packet time) — RTP packetization interval in milliseconds",
+            "a=maxptime — maximum packet time",
+            "a=sendrecv / a=sendonly / a=recvonly / a=inactive — media direction",
+            "payload type (PT) number — static (0-95) and dynamic (96-127)",
+            "media type: audio, video, application, text, message",
+            "transport protocol: RTP/AVP, RTP/SAVP, RTP/AVPF, RTP/SAVPF, UDP/TLS/RTP/SAVP",
+            "G.711 μ-law (PCMU) — payload type 0",
+            "G.711 A-law (PCMA) — payload type 8",
+            "G.722 — payload type 9",
+            "G.729 — payload type 18",
+            "telephone-event (DTMF) — dynamic payload type",
+            "opus codec — dynamic payload type",
+        ],
+    },
+    5939: {
+        "title": "Session Description Protocol (SDP) Capability Negotiation",
+        "topics": [
+            "pcfg — potential configuration (a=pcfg attribute)",
+            "a=pcfg (potential configuration attribute) — lists candidate transport and attribute configurations",
+            "acfg — actual configuration (a=acfg attribute)",
+            "a=acfg (actual configuration attribute) — selected configuration in the SDP answer",
+            "tcap — transport capability (a=tcap attribute)",
+            "a=tcap (transport capability) — advertises supported transport protocols",
+            "acap — attribute capability (a=acap attribute)",
+            "a=acap (attribute capability) — advertises supported SDP attributes",
+            "SDP capability negotiation framework",
+            "latent configuration — not active in base session",
+            "potential configuration identifier (config number)",
+            "mandatory vs optional capability in pcfg",
+            "SDP Capability Negotiation (SDPNG) extensions",
+        ],
+    },
+    # ── Call Control, Routing & Events ────────────────────────────────────────
+    3262: {
+        "title": "Reliability of Provisional Responses in SIP",
+        "topics": [
+            "PRACK (Provisional Acknowledgement) method — acknowledges reliable 1xx",
+            "100rel — SIP extension tag for reliable provisional responses",
+            "Require: 100rel — mandatory reliable provisional response",
+            "Supported: 100rel — optional reliable provisional response",
+            "RSeq (Response Sequence number) header — provisional response sequence",
+            "RAck (Reliability Acknowledgement) header — in PRACK, echoes RSeq and CSeq",
+            "reliable 1xx provisional responses (180, 183)",
+            "180 Ringing — reliable delivery via PRACK",
+            "183 Session Progress — reliable delivery for early media",
+            "provisional response retransmission prevention",
+        ],
+    },
+    3311: {
+        "title": "The Session Initiation Protocol (SIP) UPDATE Method",
+        "topics": [
+            "UPDATE method — modifies session parameters without affecting dialog state",
+            "UPDATE in early dialog — session renegotiation before call is answered",
+            "SDP offer in UPDATE — mid-session media renegotiation",
+            "UPDATE vs re-INVITE — UPDATE does not change dialog state",
+            "mid-session media modification",
+            "Allow: UPDATE — server advertisement of UPDATE support",
+        ],
+    },
+    3515: {
+        "title": "The Session Initiation Protocol (SIP) Refer Method",
+        "topics": [
+            "REFER method — requests recipient to contact a third party",
+            "Refer-To header — target URI for the transfer",
+            "attended transfer (consultative transfer) — Replaces header in Refer-To",
+            "blind transfer (unattended transfer) — direct Refer-To URI",
+            "REFER subscription — implicit event subscription created by REFER",
+            "NOTIFY for REFER — transfer progress notification (SIP/2.0 status line in body)",
+            "Referred-By header — identifies transferor",
+            "202 Accepted — response to REFER",
+            "call pickup using REFER",
+            "call diversion and forwarding",
+        ],
+    },
+    6665: {
+        "title": "SIP-Specific Event Notification",
+        "topics": [
+            "SUBSCRIBE method — event subscription request",
+            "NOTIFY method — event notification delivery",
+            "Event header — event package name (e.g. presence, dialog, refer)",
+            "SIP event notification framework",
+            "presence event package",
+            "dialog event package",
+            "Expires header — subscription lifetime in seconds",
+            "Min-Expires header — minimum acceptable subscription duration",
+            "Subscription-State header — active, pending, terminated",
+            "event watcher (subscriber)",
+            "event notifier (server)",
+            "NOTIFY body — event state document (XML, PIDF, etc.)",
+        ],
+    },
+    3891: {
+        "title": "The Session Initiation Protocol (SIP) 'Replaces' Header",
+        "topics": [
+            "Replaces header — identifies target dialog to replace",
+            "attended transfer completion — INVITE with Replaces",
+            "call pickup — INVITE with Replaces targeting ringing dialog",
+            "dialog replacement",
+            "early-only parameter in Replaces — only matches early dialogs",
+            "target dialog identification via Call-ID, to-tag, from-tag",
+        ],
+    },
+    4028: {
+        "title": "Session Timers in the Session Initiation Protocol (SIP)",
+        "topics": [
+            "Session-Expires header — negotiated session timeout in seconds",
+            "Min-SE (Minimum Session-Expires) header — minimum acceptable timer value",
+            "refresher parameter — UAC or UAS designated as session refresher",
+            "session refresh via re-INVITE — periodic keep-alive re-INVITE",
+            "session refresh via UPDATE — periodic keep-alive UPDATE",
+            "session timer negotiation in INVITE and 200 OK",
+            "session expiry and session drop",
+            "422 Session Interval Too Small — Min-SE rejection response",
+            "UPDATE keep-alive",
+            "re-INVITE keep-alive",
+        ],
+    },
+    # ── Security & Identity ───────────────────────────────────────────────────
+    4474: {
+        "title": "Enhancements for Authenticated Identity Management in the Session Initiation Protocol (SIP)",
+        "topics": [
+            "Identity header — cryptographic signature over From, To, Call-ID, CSeq, Date, Contact",
+            "Identity-Info header — URI of the certificate used to sign the Identity header",
+            "authenticated caller ID — verifiable From URI",
+            "caller identity verification via digital signature",
+            "anti-spoofing via RSA signature over SIP headers",
+            "domain certificate for SIP identity assertion",
+            "From header integrity protection",
+            "Date header — replay protection timestamp",
+            "identity proxy — authenticating proxy that inserts Identity header",
+        ],
+    },
+    7340: {
+        "title": "Secure Telephone Identity Problem Statement and Requirements",
+        "topics": [
+            "STIR (Secure Telephone Identity Revisited) — framework for authenticated caller ID",
+            "SHAKEN (Signature-based Handling of Asserted information using toKENs)",
+            "PASSporT (Personal Assertion Token) — JSON Web Token for telephone identity",
+            "telephone identity attestation — level A (full), B (partial), C (gateway)",
+            "caller ID spoofing prevention",
+            "origination identifier — identifies call originator",
+            "verstat (verification status) parameter in P-Asserted-Identity",
+            "JWS (JSON Web Signature) for PASSporT",
+            "TNAuthList — Telephone Number Authority List in certificate",
+        ],
+    },
+    8760: {
+        "title": "The SIP Digest Access Authentication Scheme",
+        "topics": [
+            "digest authentication scheme — challenge-response via hashed credentials",
+            "WWW-Authenticate header — server-to-client authentication challenge (401)",
+            "Proxy-Authenticate header — proxy-to-client authentication challenge (407)",
+            "Authorization header — client digest authentication response",
+            "Proxy-Authorization header — client response to proxy challenge",
+            "nonce — server-generated random challenge value",
+            "cnonce (client nonce) — client-generated random value",
+            "realm — authentication domain string",
+            "qop (quality of protection) — auth (header-only) or auth-int (body-included)",
+            "nc (nonce count) — replay-protection request counter",
+            "SHA-256 digest algorithm (replaces MD5 in RFC 8760)",
+            "MD5 digest algorithm (legacy)",
+            "response hash — H(HA1:nonce:nc:cnonce:qop:HA2)",
+            "opaque — server state token echoed by client",
+            "stale=true — nonce expired, re-challenge without re-prompt",
+            "401 Unauthorized — authentication challenge response code",
+            "407 Proxy Authentication Required",
+        ],
+    },
+    # ── Media Security & Transport ────────────────────────────────────────────
+    3711: {
+        "title": "The Secure Real-time Transport Protocol (SRTP)",
+        "topics": [
+            "SRTP (Secure Real-time Transport Protocol) — encrypted RTP",
+            "SRTCP (Secure RTP Control Protocol) — encrypted RTCP",
+            "AES (Advanced Encryption Standard) encryption",
+            "AES-CM (AES Counter Mode) — stream cipher for SRTP",
+            "AES-f8 (AES f8 mode) — feedback-based cipher",
+            "HMAC-SHA1 (Hash-based Message Authentication Code) — 80-bit and 32-bit authentication tags",
+            "master key — session master encryption key",
+            "master salt — session master salt",
+            "KDF (Key Derivation Function) — derives session keys from master key",
+            "MKID (Master Key Identifier) — identifies which master key to use",
+            "ROC (Rollover Counter) — extended sequence number for key lifetime",
+            "packet index — extended 48-bit sequence number for replay protection",
+            "authentication tag — integrity check value appended to SRTP packet",
+            "cryptographic context — per-SSRC state for SRTP processing",
+            "key lifetime — maximum number of packets before rekeying",
+        ],
+    },
+    # ── Examples & Messaging ──────────────────────────────────────────────────
+    3665: {
+        "title": "SIP Basic Call Flow Examples",
+        "topics": [
+            "SIP INVITE call setup flow — INVITE, 100 Trying, 180 Ringing, 200 OK, ACK",
+            "SIP call teardown flow — BYE, 200 OK",
+            "CANCEL flow — canceling a pending INVITE",
+            "SIP registration flow — REGISTER, 401 Unauthorized, REGISTER, 200 OK",
+            "proxy routing call flow — stateful proxy forwarding",
+            "redirect server call flow — 302 Moved Temporarily",
+            "forked INVITE — multiple parallel or sequential INVITE branches",
+            "SIP session with authentication challenge",
+            "SIP message sequence examples",
+        ],
+    },
+    3428: {
+        "title": "SIP Extension for Instant Messaging",
+        "topics": [
+            "MESSAGE method — SIP instant messaging without dialog",
+            "IM (Instant Messaging) via SIP pager model",
+            "Content-Type header — text/plain or text/html message body",
+            "200 OK response to MESSAGE",
+            "SIP MESSAGE outside of a dialog",
+            "non-INVITE transaction for messaging",
+        ],
+    },
+    5630: {
+        "title": "The Use of the SDES for TLS SIP Sessions",
+        "topics": [
+            "SDES (SDP Security Descriptions) — SRTP key exchange via SDP a=crypto attribute",
+            "a=crypto attribute — inline SRTP session key and parameters in SDP",
+            "crypto suite: AES_CM_128_HMAC_SHA1_80 — 128-bit AES-CM, 80-bit HMAC-SHA1 auth tag",
+            "crypto suite: AES_CM_128_HMAC_SHA1_32 — 128-bit AES-CM, 32-bit HMAC-SHA1 auth tag",
+            "crypto suite: F8_128_HMAC_SHA1_80 — AES-f8 cipher with 80-bit auth tag",
+            "inline key — base64-encoded master key and master salt in a=crypto",
+            "MKI (Master Key Identifier) — key identifier and length in SDES inline parameter",
+            "key lifetime in SDES — maximum packet count before rekeying",
+            "SDES offer/answer for SRTP key negotiation",
+            "SIP over TLS with SDES-based SRTP key management",
+        ],
+    },
+    5922: {
+        "title": "Domain Certificates in the Session Initiation Protocol (SIP)",
+        "topics": [
+            "TLS (Transport Layer Security) certificate validation in SIP",
+            "domain certificate — X.509 certificate asserting a SIP domain identity",
+            "subjectAltName (SAN) — certificate extension carrying SIP URI or domain",
+            "CN (Common Name) — fallback hostname match in certificate",
+            "CA (Certificate Authority) — trust anchor for certificate validation",
+            "mutual TLS authentication — both client and server present certificates",
+            "SIP identity via TLS certificate",
+            "SIPS URI certificate verification",
+            "certificate chain validation",
+            "wildcard certificate in SIP",
+        ],
+    },
+    5923: {
+        "title": "Connection Reuse in the Session Initiation Protocol (SIP)",
+        "topics": [
+            "connection reuse — sharing one TLS or TCP connection for multiple SIP dialogs",
+            "alias parameter in Via header — signals willingness to reuse connection",
+            "persistent TCP connection in SIP",
+            "TCP connection reuse for SIP signaling",
+            "TLS connection reuse for SIP signaling",
+            "connection-oriented transport management",
+            "reuse=yes negotiation",
+            "Via: alias — connection reuse indication",
+        ],
+    },
+    4572: {
+        "title": "Connection-Oriented Media Transport over TLS in SDP",
+        "topics": [
+            "DTLS-SRTP (Datagram Transport Layer Security for SRTP) — media-plane key exchange",
+            "a=fingerprint — SHA-256 certificate fingerprint in SDP for DTLS",
+            "a=setup — DTLS handshake role: actpass, active, passive, holdconn",
+            "actpass — willing to be either DTLS client or server",
+            "active — DTLS client role (initiates handshake)",
+            "passive — DTLS server role (waits for handshake)",
+            "comedia (connection-oriented media) — RFC 4145 connection management",
+            "a=connection — new or existing media connection",
+            "TLS media transport in SDP",
+            "DTLS handshake over UDP for media",
+            "media-level TLS certificate fingerprint",
+        ],
+    },
+    6904: {
+        "title": "Encryption of Header Extensions in the Secure Real-time Transport Protocol (SRTP)",
+        "topics": [
+            "SRTP header extension encryption — encrypting RTP extension headers",
+            "RTP header extension (RFC 5285) — one-byte and two-byte extension formats",
+            "one-byte header extension format — 0xBEDE profile marker",
+            "two-byte header extension format — 0x1000 profile marker",
+            "encrypted header extension — confidential RTP extension payload",
+            "urn:ietf:params:rtp-hdrext:encrypt — SDP URI for encrypted header extension",
+            "extmap attribute — a=extmap in SDP for header extension mapping",
+            "header extension confidentiality in SRTP",
+            "cryptographic protection of RTP extension header content",
+        ],
+    },
+}
