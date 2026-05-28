@@ -1,6 +1,7 @@
 # Environment & secrets
 .env
 .env.*
+!.env.example
 
 # Vector store (generated, too large for git)
 chroma_db/
