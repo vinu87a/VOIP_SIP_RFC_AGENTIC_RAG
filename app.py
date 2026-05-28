@@ -64,12 +64,9 @@ The SIP trace is already loaded. Analyse it using the trace tools and produce
 a structured report.
 
 ━━━ TOOL WORKFLOW (mandatory — follow this order) ━━━
-1. Call reconstruct_call_flow — this is mandatory and must always be called.
-   Calling it triggers the ASCII ladder diagram to appear in a dedicated UI
-   expander below your response (rendered automatically from the tool result).
-   In your Section 2 text, write only a compact arrow-chain summary of the
-   message sequence (e.g. "INVITE → 100 Trying → 488 → ACK") and note any
-   missing or unexpected steps. Do NOT reproduce the ladder in text.
+1. Call reconstruct_call_flow — always call this first. The ASCII ladder
+   diagram is rendered automatically in a UI expander; do not reproduce it
+   in your text response.
 2. For each section below, use targeted search_trace calls to retrieve the
    specific messages you need (INVITE, error responses, SDP bodies, auth
    headers, RTP stream summaries, etc.).
@@ -88,45 +85,40 @@ produce placeholder text such as "no data available" or "not present in trace"
 ━━━ SECTIONS TO COVER (if present in the trace) ━━━
   1. Trace overview — detected scenario type, Call-ID(s), endpoints, message
      count, timestamp range, call direction
-  2. Call flow diagram — write the message sequence as a compact arrow chain
-     (e.g. INVITE → 100 Trying → 488 Not Acceptable Here → ACK), note the
-     scenario and any missing steps. The ASCII ladder with UAC/Proxy/UAS
-     columns, RTP bars, and DTMF labels appears in the expander triggered by
-     the reconstruct_call_flow call — do NOT try to reproduce it in text.
-  3. Codec & SDP negotiation — offered vs answered codecs, SDP body diffs,
+  2. Codec & SDP negotiation — offered vs answered codecs, SDP body diffs,
      dynamic payload type mapping, a=rtpmap / a=fmtp verification
-  4. RTP / media analysis — media IP/port, SSRC, ptime, directionality,
+  3. RTP / media analysis — media IP/port, SSRC, ptime, directionality,
      sequence-number gaps (packet loss), timestamp irregularities (jitter),
      payload type match vs SDP answer, RTCP if present
-  5. Failure & error analysis — exact message where call broke, error code,
+  4. Failure & error analysis — exact message where call broke, error code,
      responsible party (caller / callee / proxy / SBC), root cause
-  6. Timer & retransmit — 100 Trying latency, T1/T2 behaviour,
+  5. Timer & retransmit — 100 Trying latency, T1/T2 behaviour,
      retransmission storms, session timer (Session-Expires / Min-SE),
      re-INVITE / UPDATE refresh presence, OPTIONS keep-alives
-  7. DTMF analysis — RFC 4733 telephone-event, payload type 101, SIP INFO
-  8. TLS / transport — TLS version, cipher suite, SIPS URI usage,
+  6. DTMF analysis — RFC 4733 telephone-event, payload type 101, SIP INFO
+  7. TLS / transport — TLS version, cipher suite, SIPS URI usage,
      certificate issues, TCP RST after ClientHello
-  9. Header anomalies — missing, malformed, or non-RFC-compliant headers;
+  8. Header anomalies — missing, malformed, or non-RFC-compliant headers;
      Max-Forwards value; Contact URI integrity
-  10. Routing & topology — Via chain, Record-Route insertion vs Route usage
-      in mid-dialog requests, unexpected intermediaries
-  11. Authentication flow — 401/407 challenge–response, nonce/cnonce/qop/nc
+  9. Routing & topology — Via chain, Record-Route insertion vs Route usage
+     in mid-dialog requests, unexpected intermediaries
+  10. Authentication flow — 401/407 challenge–response, nonce/cnonce/qop/nc
       field validation, realm mismatches, incomplete handshakes
-  12. NAT / ICE / STUN — Contact vs Via address mismatch, rport, ICE
+  11. NAT / ICE / STUN — Contact vs Via address mismatch, rport, ICE
       candidates (host/srflx/relay), SRTP key exchange method
       (SDES a=crypto vs DTLS-SRTP a=fingerprint / a=setup)
-  13. Early media / 183 — 180 Ringing vs 183 Session Progress, SDP in 1xx,
+  12. Early media / 183 — 180 Ringing vs 183 Session Progress, SDP in 1xx,
       PRACK (100rel) usage
 
 ━━━ SCENARIO CONTEXT ━━━
 First detect the scenario type from the trace (call failure, successful call,
 registration failure, authentication loop, codec mismatch, NAT issue, etc.)
 and state it clearly at the start of Section 1. Then prioritise sections:
-- Call failure      → lead with §5 Failure & error analysis
-- Codec mismatch    → lead with §3 Codec & SDP negotiation
-- Auth loop         → lead with §11 Authentication flow
-- NAT issue         → lead with §12 NAT / ICE / STUN
-- Successful call   → lead with §2 Call flow, then §3 Codec, then §4 RTP
+- Call failure      → lead with §4 Failure & error analysis
+- Codec mismatch    → lead with §2 Codec & SDP negotiation
+- Auth loop         → lead with §10 Authentication flow
+- NAT issue         → lead with §11 NAT / ICE / STUN
+- Successful call   → lead with §2 Codec, then §3 RTP
 
 ━━━ INLINE COMMENTARY RULES ━━━
 - Flag anything that deviates from RFC expectations.
