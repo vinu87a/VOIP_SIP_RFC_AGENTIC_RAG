@@ -231,16 +231,19 @@ def _build_graph(vector_store):
     )
 
     # ── Fallback: Ollama ──────────────────────────────────────────────────────
+    # num_predict matches Groq's max_tokens so responses are never truncated.
     ollama_with_tools = ChatOllama(
         model=OLLAMA_MODEL,
         base_url=OLLAMA_BASE_URL,
         temperature=0.1,
+        num_predict=4096,
     ).bind_tools(lc_tools)
 
     ollama_plain = ChatOllama(
         model=OLLAMA_MODEL,
         base_url=OLLAMA_BASE_URL,
         temperature=0.1,
+        num_predict=4096,
     )
 
     def agent_node(state: AgentState) -> Dict:
