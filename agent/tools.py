@@ -1,4 +1,5 @@
 import json
+import re
 import logging
 from typing import Any, Dict, List
 
@@ -274,6 +275,118 @@ def _search_trace(args: Dict, vs) -> Dict:
     }
 
 
+# ── Ladder diagram helpers ────────────────────────────────────────────────────
+
+_SIP_REASONS: Dict[int, str] = {
+    100: "Trying", 180: "Ringing", 181: "Call Forwarded",
+    182: "Queued", 183: "Session Progress",
+    200: "OK", 202: "Accepted",
+    301: "Moved Permanently", 302: "Moved Temporarily",
+    400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
+    404: "Not Found", 405: "Method Not Allowed",
+    407: "Proxy Auth Required", 408: "Request Timeout",
+    422: "Session Interval Too Small", 480: "Temporarily Unavailable",
+    481: "Call Leg Does Not Exist", 482: "Loop Detected",
+    486: "Busy Here", 487: "Request Terminated",
+    488: "Not Acceptable Here", 491: "Request Pending",
+    500: "Server Internal Error", 503: "Service Unavailable",
+    504: "Server Timeout", 600: "Busy Everywhere", 603: "Decline",
+}
+
+
+def _assign_ep_labels(msgs: List[Dict], ips: List[str]) -> Dict[str, str]:
+    """Label each unique IP as UAC, UAS, or Proxy based on INVITE direction."""
+    invite_msgs = [m for m in msgs if m.get("method") == "INVITE"]
+    uac_ip = invite_msgs[0].get("src_ip", "")  if invite_msgs else ""
+    uas_ip = invite_msgs[-1].get("dst_ip", "") if invite_msgs else ""
+    labels: Dict[str, str] = {}
+    proxy_n = 1
+    for ip in ips:
+        if ip == uac_ip:
+            labels[ip] = f"UAC\n{ip}"
+        elif ip == uas_ip and ip != uac_ip:
+            labels[ip] = f"UAS\n{ip}"
+        else:
+            tag = "Proxy" if proxy_n == 1 else f"Proxy-{proxy_n}"
+            labels[ip] = f"{tag}\n{ip}"
+            proxy_n += 1
+    return labels
+
+
+def _make_arrow_line(src_idx: int, dst_idx: int, label: str,
+                     n_cols: int, col_w: int) -> str:
+    """
+    Build one row of the ASCII ladder.
+    Idle columns show a centred '|'; the arrow spans from src to dst column.
+    """
+    total = n_cols * col_w
+    buf   = list(" " * total)
+
+    for i in range(n_cols):
+        buf[i * col_w + col_w // 2] = "|"
+
+    if src_idx == dst_idx:
+        return "".join(buf)
+
+    going_right = src_idx < dst_idx
+    lc = min(src_idx, dst_idx) * col_w + col_w // 2
+    rc = max(src_idx, dst_idx) * col_w + col_w // 2
+
+    # Fill span with dashes (overwrites intermediate column pipes)
+    for pos in range(lc + 1, rc):
+        buf[pos] = "-"
+
+    # Arrowhead
+    if going_right:
+        buf[rc - 1] = ">"
+    else:
+        buf[lc + 1] = "<"
+
+    # Centre label inside the span with 2-char margins
+    avail = rc - lc - 4
+    lbl   = label[:avail] if avail > 0 else ""
+    if lbl:
+        mid   = (lc + rc) // 2
+        start = max(lc + 2, mid - len(lbl) // 2)
+        start = min(start, rc - 2 - len(lbl))
+        for j, ch in enumerate(lbl):
+            buf[start + j] = ch
+
+    # Re-draw arrowhead (label may have overwritten it)
+    if going_right:
+        buf[rc - 1] = ">"
+    else:
+        buf[lc + 1] = "<"
+
+    return "".join(buf)
+
+
+def _make_rtp_bar(rtp_text: str, n_cols: int, col_w: int) -> str:
+    """Full-width ═ bar summarising one RTP stream, with key stats in the centre."""
+    ssrc_m  = re.search(r"SSRC=(0x[0-9A-Fa-f]+)",               rtp_text)
+    codec_m = re.search(r"Payload Type\s*:\s*\d+\s*\(([^)]+)\)", rtp_text)
+    dur_m   = re.search(r"Duration\s*:\s*~?([^\n]+)",            rtp_text)
+    pkts_m  = re.search(r"Packets\s*:\s*(\d+)",                  rtp_text)
+
+    codec = codec_m.group(1).strip() if codec_m else "RTP"
+    ssrc  = ssrc_m.group(1)          if ssrc_m  else "?"
+    dur   = dur_m.group(1).strip()[:14] if dur_m else ""
+    pkts  = pkts_m.group(1)             if pkts_m else ""
+
+    parts = [f"RTP ▸ {codec}", f"SSRC {ssrc}"]
+    if dur:  parts.append(f"~{dur}")
+    if pkts: parts.append(f"{pkts} pkts")
+    info  = "  ".join(parts)
+
+    total = n_cols * col_w
+    bar   = list("═" * total)
+    start = max(1, total // 2 - len(info) // 2)
+    for j, ch in enumerate(info):
+        if start + j < total - 1:
+            bar[start + j] = ch
+    return "".join(bar)
+
+
 def _reconstruct_call_flow(args: Dict, vs) -> Dict:
     if vs.trace_count() == 0:
         return {"message": "No SIP trace is currently loaded."}
@@ -284,9 +397,13 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
     if call_id_filter:
         all_msgs = [m for m in all_msgs if call_id_filter in m.get("call_id", "")]
 
-    # Group by Call-ID
+    # Separate RTP stream summaries from SIP signalling messages
+    rtp_streams = [m for m in all_msgs if m.get("msg_type") == "rtp_stream"]
+    sip_msgs    = [m for m in all_msgs if m.get("msg_type") != "rtp_stream"]
+
+    # Group SIP messages by Call-ID
     dialogs: Dict[str, List] = {}
-    for msg in all_msgs:
+    for msg in sip_msgs:
         cid = msg.get("call_id") or "unknown"
         dialogs.setdefault(cid, []).append(msg)
 
@@ -296,23 +413,91 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
         except (ValueError, IndexError):
             return 0
 
+    def _is_dtmf(m: Dict) -> bool:
+        text = (m.get("text") or "").lower()
+        return (
+            m.get("method") == "INFO"
+            and ("dtmf" in text or "application/dtmf" in text or "signal=" in text)
+        )
+
     flows = []
     for cid, msgs in dialogs.items():
         sorted_msgs = sorted(msgs, key=_cseq_num)
-        steps = []
+
+        # Collect unique IPs in first-appearance order
+        seen_ips: List[str] = []
         for m in sorted_msgs:
-            label = m.get("method") or str(m.get("response_code", "?"))
-            src = m.get("src_ip", "UA-A")
-            dst = m.get("dst_ip", "UA-B")
-            cseq = m.get("cseq", "")
-            steps.append(f"{src}  →  {dst} : {label}  [CSeq: {cseq}]")
-        flows.append(
-            {
-                "call_id": cid,
-                "message_count": len(msgs),
-                "flow": steps,
-            }
-        )
+            for key in ("src_ip", "dst_ip"):
+                ip = m.get(key, "")
+                if ip and ip not in seen_ips:
+                    seen_ips.append(ip)
+        if not seen_ips:
+            seen_ips = ["UA-A", "UA-B"]
+
+        ep_labels = _assign_ep_labels(sorted_msgs, seen_ips)
+        n     = len(seen_ips)
+        col_w = max(20, min(36, 80 // n))
+
+        # ── Build ASCII ladder ─────────────────────────────────────────────────
+        ladder: List[str] = []
+
+        # Header: endpoint labels (2 lines each: role + IP)
+        label_rows = [ep_labels.get(ip, ip).split("\n") for ip in seen_ips]
+        max_hdr    = max(len(r) for r in label_rows)
+        for row_i in range(max_hdr):
+            parts = []
+            for col_i in range(n):
+                rows = label_rows[col_i]
+                text = rows[row_i] if row_i < len(rows) else ""
+                parts.append(f"{text:^{col_w}}")
+            ladder.append("".join(parts))
+
+        ladder.append("".join("|".center(col_w) for _ in range(n)))
+
+        # Position of the last ACK — RTP bars are inserted after it
+        ack_pos = None
+        for i, m in enumerate(sorted_msgs):
+            if m.get("method") == "ACK":
+                ack_pos = i
+
+        rtp_inserted = False
+
+        for i, m in enumerate(sorted_msgs):
+            src_ip = m.get("src_ip", "")
+            dst_ip = m.get("dst_ip", "")
+            method = m.get("method", "")
+            code   = int(m.get("response_code") or 0)
+            cseq   = m.get("cseq", "")
+
+            if method:
+                label = "DTMF INFO" if _is_dtmf(m) else method
+            else:
+                reason = _SIP_REASONS.get(code, "")
+                label  = f"{code} {reason}" if reason else str(code)
+
+            if cseq:
+                label = f"{label} [{cseq.split()[0]}]"
+
+            src_idx = seen_ips.index(src_ip) if src_ip in seen_ips else 0
+            dst_idx = seen_ips.index(dst_ip) if dst_ip in seen_ips else n - 1
+
+            ladder.append(_make_arrow_line(src_idx, dst_idx, label, n, col_w))
+
+            # Insert RTP bars right after the final ACK (media is now flowing)
+            if i == ack_pos and not rtp_inserted and rtp_streams:
+                for rtp in rtp_streams:
+                    ladder.append(_make_rtp_bar(rtp.get("text", ""), n, col_w))
+                rtp_inserted = True
+
+        if not rtp_inserted and rtp_streams:
+            for rtp in rtp_streams:
+                ladder.append(_make_rtp_bar(rtp.get("text", ""), n, col_w))
+
+        flows.append({
+            "call_id":       cid,
+            "message_count": len(msgs),
+            "flow":          ladder,
+        })
 
     return {"total_messages": len(all_msgs), "dialogs": flows}
 
