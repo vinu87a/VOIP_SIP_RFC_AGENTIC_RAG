@@ -55,60 +55,95 @@ EXAMPLE_QUESTIONS = [
     ("🔗", "How does connection reuse work in RFC 5923?"),
 ]
 
-AUTO_ANALYSIS_PROMPT = """Perform a comprehensive diagnostic analysis of the uploaded SIP trace.
-Structure your report into exactly these 9 sections:
+AUTO_ANALYSIS_PROMPT = """You are an expert SIP/VoIP protocol analyst with deep knowledge of RFC 3261,
+RFC 4566 (SDP), RFC 3264 (offer/answer), RFC 3550 (RTP), RFC 3711 (SRTP),
+RFC 8760 (SIP digest auth), RFC 4028 (session timers), and RFC 3262 (PRACK),
+and real-world carrier and enterprise SBC deployments.
 
-## 1. Signaling Path (SIP Messages)
-- Reconstruct the complete call flow: INVITE → 100 Trying → 180 Ringing → 200 OK → ACK → BYE / CANCEL.
-- Identify any missing or out-of-order steps.
-- List all response codes present and flag any 4xx (client failure), 5xx (server error), or 6xx (global failure).
+The SIP trace is already loaded. Analyse it using the trace tools and produce
+a structured report.
 
-## 2. Network & Registration
-- Identify REGISTER / 200 OK exchanges — are endpoints registered?
-- List source and destination IP addresses; flag any RFC 1918 private IPs in SDP c= lines or Via headers that may indicate NAT traversal issues.
-- Note retransmissions or timeouts if visible.
+━━━ TOOL WORKFLOW (mandatory — follow this order) ━━━
+1. Call reconstruct_call_flow first — this gives you the complete ordered
+   dialog and drives Section 2.
+2. For each section below, use targeted search_trace calls to retrieve the
+   specific messages you need (INVITE, error responses, SDP bodies, auth
+   headers, RTP stream summaries, etc.).
+3. For every [CRITICAL] or [WARNING] finding, call search_rfc with an
+   appropriate rfc_filter to retrieve the governing rule. Cite it inline as
+   *(RFC XXXX, §Y.Y)* immediately after the finding.
+4. Use cross_reference when you need to determine whether a specific observed
+   behaviour is RFC-compliant.
+Never describe what you plan to search — call the tools and report findings directly.
 
-## 3. Media & Codecs (SDP)
-- Extract and compare the SDP offer and answer: which codecs were offered and which were accepted?
-- Verify both endpoints agreed on the same codec.
-- Report any RTP streams found: codec / payload type, SSRC, direction, packet count, and estimated duration.
+━━━ ADAPTIVE SECTION RULE ━━━
+Only include a section if the trace contains relevant data for it. Do NOT
+produce placeholder text such as "no data available" or "not present in trace"
+— omit sections that don't apply entirely. Keep the report tight and relevant.
 
-## 4. Authentication
-- Check for 401 Unauthorized or 407 Proxy Authentication Required challenges.
-- Determine if the challenge was answered and completed successfully.
-- Flag any authentication failures or missing credential exchanges.
+━━━ SECTIONS TO COVER (if present in the trace) ━━━
+  1. Trace overview — detected scenario type, Call-ID(s), endpoints, message
+     count, timestamp range, call direction
+  2. Call flow diagram — full ladder/sequence of all SIP messages in order,
+     taken directly from reconstruct_call_flow output
+  3. Codec & SDP negotiation — offered vs answered codecs, SDP body diffs,
+     dynamic payload type mapping, a=rtpmap / a=fmtp verification
+  4. RTP / media analysis — media IP/port, SSRC, ptime, directionality,
+     sequence-number gaps (packet loss), timestamp irregularities (jitter),
+     payload type match vs SDP answer, RTCP if present
+  5. Failure & error analysis — exact message where call broke, error code,
+     responsible party (caller / callee / proxy / SBC), root cause
+  6. Timer & retransmit — 100 Trying latency, T1/T2 behaviour,
+     retransmission storms, session timer (Session-Expires / Min-SE),
+     re-INVITE / UPDATE refresh presence, OPTIONS keep-alives
+  7. DTMF analysis — RFC 4733 telephone-event, payload type 101, SIP INFO
+  8. TLS / transport — TLS version, cipher suite, SIPS URI usage,
+     certificate issues, TCP RST after ClientHello
+  9. Header anomalies — missing, malformed, or non-RFC-compliant headers;
+     Max-Forwards value; Contact URI integrity
+  10. Routing & topology — Via chain, Record-Route insertion vs Route usage
+      in mid-dialog requests, unexpected intermediaries
+  11. Authentication flow — 401/407 challenge–response, nonce/cnonce/qop/nc
+      field validation, realm mismatches, incomplete handshakes
+  12. NAT / ICE / STUN — Contact vs Via address mismatch, rport, ICE
+      candidates (host/srflx/relay), SRTP key exchange method
+      (SDES a=crypto vs DTLS-SRTP a=fingerprint / a=setup)
+  13. Early media / 183 — 180 Ringing vs 183 Session Progress, SDP in 1xx,
+      PRACK (100rel) usage
 
-## 5. SDP Payload & Media Negotiation Analysis
-- Dynamic Payload Mapping: Verify that RTP payload types in the SDP m= (media) lines strictly map to a=rtpmap attributes. Flag any payload types used in m= lines that lack a corresponding a=rtpmap entry, or where the mapping differs between offer and answer.
-- ICE/STUN/TURN Candidates: If a=candidate lines are present, list them by component ID, priority, and connection type (host/srflx/relay). Check whether both endpoints appear to converge on the same candidate pair.
-- Crypto Attribute Matching (SRTP): If a=crypto attributes are present, compare the cryptographic suites, master keys, and lifetime parameters in the offer vs. the answer. Flag any mismatch that would prevent SRTP session establishment.
+━━━ SCENARIO CONTEXT ━━━
+First detect the scenario type from the trace (call failure, successful call,
+registration failure, authentication loop, codec mismatch, NAT issue, etc.)
+and state it clearly at the start of Section 1. Then prioritise sections:
+- Call failure      → lead with §5 Failure & error analysis
+- Codec mismatch    → lead with §3 Codec & SDP negotiation
+- Auth loop         → lead with §11 Authentication flow
+- NAT issue         → lead with §12 NAT / ICE / STUN
+- Successful call   → lead with §2 Call flow, then §3 Codec, then §4 RTP
 
-## 6. Session Timers & Keep-Alives
-- Session-Expires / Min-SE: Extract the Session-Expires and Min-SE header values from INVITE and 200 OK. Identify which entity is designated as the refresher (UAC or UAS) via the refresher= parameter. Flag if no session timer was negotiated or if values conflict.
-- Re-INVITE / UPDATE Refresh: Check whether periodic re-INVITE or UPDATE keep-alive messages appear before the Session-Expires timer elapses. Flag mid-dialog absence of refresh messages as a potential cause of session drops.
-- OPTIONS Keep-Alives: Identify SIP OPTIONS requests and their 200 OK responses. Note any OPTIONS that go unanswered — these indicate upstream link degradation before an actual call failure surfaces.
+━━━ INLINE COMMENTARY RULES ━━━
+- Flag anything that deviates from RFC expectations.
+- Note protocol violations, header mismatches, timing anomalies, security concerns.
+- Severity labels:
+    [CRITICAL]  call-breaking issue
+    [WARNING]   degraded experience or non-compliant behaviour
+    [INFO]      observation, not harmful
+- Every [CRITICAL] and [WARNING] must end with an inline RFC citation:
+  *(RFC XXXX, §Y.Y)*
+- Quote the exact SIP header or SDP line from the trace for every finding
+  (inline code block).
 
-## 7. RTP & RTCP Quality Metrics
-- Jitter & Packet Loss: From RTP stream data, compute sequence-number gaps (packet loss indicator) and timestamp irregularities (jitter indicator). Flag loss > 1% or jitter > 30 ms as degraded quality.
-- Delta & Clock Skew: Examine RTP timestamp progression relative to packet sequence. Irregular deltas suggest network congestion; constant linear drift indicates a hardware or sampling-rate mismatch on the gateway or endpoint.
-- Payload Verification: Confirm that the payload type number carried inside RTP packets matches the codec negotiated in the SDP answer (e.g., PT 0 must be G.711 μ-law per RFC 3551). Flag any payload type mismatch.
-- RTCP: If RTCP packets or summaries are present, extract sender/receiver report data: cumulative packet loss, interarrival jitter, and round-trip time (RTT).
+━━━ OUTPUT FORMAT ━━━
+Numbered sections with clear ### headings. Sub-bullets for detail. SIP header
+and SDP excerpts quoted in code blocks. Use **bold** for method names,
+response codes, header names, and exact values extracted from the trace.
 
-## 8. Header Modification & Routing Inconsistencies
-- Via Header Path: List all Via headers from a representative INVITE and its 200 OK to trace the full hop path. Identify any unexpected intermediaries.
-- Record-Route & Route: Verify that Record-Route headers inserted by proxies/SBCs are reflected as Route headers in subsequent mid-dialog requests (ACK, re-INVITE, BYE). Flag any route set inconsistency.
-- Max-Forwards: Report the Max-Forwards value in each INVITE or re-INVITE. Flag if the value reaches 0 (confirms a routing loop) or is absent.
-- Contact Header Integrity: Inspect Contact URI in INVITE and 200 OK. Flag any RFC 1918 address or localhost URI in a Contact header that would break direct routing of mid-dialog requests.
-
-## 9. Advanced Authentication & Security
-- Nonce / Cnonce Validation: For 401/407 challenge–response exchanges, verify that the WWW-Authenticate or Proxy-Authenticate nonce is echoed back in the Authorization header. Check that qop, nc, and cnonce fields are present when digest authentication with qop=auth is used.
-- TLS / SIPS: If the trace contains SIPS URIs or TCP port 5061 traffic, note whether TLS handshake records are visible. Flag any immediate TCP RST after ClientHello as a cipher-suite or certificate mismatch.
-- a=crypto vs. DTLS-SRTP: Distinguish between SDES (a=crypto) and DTLS-SRTP (a=fingerprint / a=setup) key exchange. Flag traces that mix both or omit key exchange entirely for SRTP streams.
-
-Use reconstruct_call_flow first to see the overall dialog, then search_trace to inspect specific messages. \
-Call search_rfc to reference governing rules when flagging RFC violations. \
-Quote actual values from the trace (IPs, codecs, response codes, Call-IDs, header values). \
-If a section has no relevant data in the trace, state "Not observed in this trace" rather than skipping it.
+━━━ COMMENTS & RECOMMENDATIONS ━━━
+End with a "Comments & Recommendations" section as a concise bullet list.
+Each bullet: one-line observation followed by one-line fix.
+Split into two groups:
+  Critical  — call-breaking issues, must fix immediately
+  Advisory  — best-practice improvements
 """
 
 
