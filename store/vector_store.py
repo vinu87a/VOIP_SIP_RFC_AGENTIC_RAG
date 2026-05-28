@@ -308,6 +308,7 @@ class VectorStore:
                     "cseq":          str(msg.get("cseq", ""))[:32],
                     "src_ip":        str(msg.get("src_ip", ""))[:40],
                     "dst_ip":        str(msg.get("dst_ip", ""))[:40],
+                    "trace_idx":     idx,  # original capture order
                 }
             )
         if ids:

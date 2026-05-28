@@ -448,7 +448,12 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
         cid = msg.get("call_id") or "unknown"
         dialogs.setdefault(cid, []).append(msg)
 
-    def _cseq_num(m: Dict) -> int:
+    def _sort_key(m: Dict) -> int:
+        # Prefer the original capture index stored at ingest time.
+        # Fall back to CSeq number for traces uploaded before this field existed.
+        idx = m.get("trace_idx")
+        if idx is not None:
+            return int(idx)
         try:
             return int(str(m.get("cseq", "0")).split()[0])
         except (ValueError, IndexError):
@@ -463,7 +468,7 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
 
     flows = []
     for cid, msgs in dialogs.items():
-        sorted_msgs = sorted(msgs, key=_cseq_num)
+        sorted_msgs = sorted(msgs, key=_sort_key)
 
         # Collect unique IPs in first-appearance order
         seen_ips: List[str] = []
