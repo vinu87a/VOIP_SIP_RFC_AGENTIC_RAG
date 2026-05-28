@@ -416,12 +416,20 @@ class AgentOrchestrator:
                 f"you plan to call. Call them immediately and report the actual findings.\n"
                 f"- Do NOT mention tool names (search_rfc, search_trace, "
                 f"reconstruct_call_flow, diagnose_sip_error, cross_reference) anywhere "
-                f"in your final answer."
+                f"in your final answer.\n\n"
+                f"**Active format mode: Mode B (trace analysis)** — use numbered `###` "
+                f"sections, severity labels [CRITICAL]/[WARNING]/[INFO], inline RFC "
+                f"citations on every finding, and end with Comments & Recommendations."
             )
         else:
             trace_status = (
                 "\n\n## Trace Status\n"
-                "No SIP trace is currently loaded. Answer from the RFC knowledge base only. "
+                "No SIP trace is currently loaded. Answer from the RFC knowledge base only.\n\n"
+                "**Active format mode: Mode A (general protocol question)** — answer in "
+                "focused prose calibrated to the question. Use a heading only when the "
+                "answer genuinely spans multiple distinct topics. No severity labels, no "
+                "numbered section structure, no Comments & Recommendations section. "
+                "Cite inline with *(RFC XXXX, §Y.Y)* after each factual claim.\n\n"
                 "If the user asks about a trace, politely explain they need to upload one "
                 "using the sidebar uploader."
             )
