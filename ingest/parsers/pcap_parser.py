@@ -231,8 +231,9 @@ def parse_pcap_trace(file_path: str) -> List[Dict[str, Any]]:
             elif pkt.haslayer(IPv6):
                 msg["src_ip"] = pkt[IPv6].src
                 msg["dst_ip"] = pkt[IPv6].dst
-            msg["src_port"] = sport
-            msg["dst_port"] = dport
+            msg["src_port"]  = sport
+            msg["dst_port"]  = dport
+            msg["timestamp"] = float(pkt.time)   # Unix epoch with sub-second precision
             messages.append(msg)
         except Exception as exc:
             logger.debug(f"Skipping SIP packet: {exc}")

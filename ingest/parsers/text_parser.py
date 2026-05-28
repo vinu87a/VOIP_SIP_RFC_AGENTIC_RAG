@@ -88,23 +88,44 @@ def build_message(raw: str) -> Dict[str, Any]:
     return msg
 
 
+# Timestamp patterns commonly found in SIP trace files (sngrep, sipp, syslog, etc.)
+_TS_PATTERN = re.compile(
+    r'(?:'
+    r'\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?'          # ISO full
+    r'|\d{2}:\d{2}:\d{2}(?:[.,]\d+)?'                                        # HH:MM:SS[.ms]
+    r'|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}'  # syslog
+    r')',
+    re.IGNORECASE,
+)
+
+
 def parse_text_trace(content: str) -> List[Dict[str, Any]]:
     """
     Extract all SIP messages from a plain-text trace file.
     Handles concatenated message dumps (e.g., sipp logs, sngrep exports).
+    Also extracts timestamps from common formats in the surrounding text.
     """
     messages: List[Dict[str, Any]] = []
-    segments = _MSG_BOUNDARY.split(content)
 
-    for seg in segments:
-        seg = seg.strip()
+    # Use finditer so we can inspect the text *before* each SIP boundary
+    boundaries = [m.start() for m in _MSG_BOUNDARY.finditer(content)]
+
+    for i, start in enumerate(boundaries):
+        end = boundaries[i + 1] if i + 1 < len(boundaries) else len(content)
+        seg = content[start:end].strip()
         if not seg:
             continue
         first = seg.splitlines()[0].strip()
         if not (_REQUEST_LINE.match(first) or _RESPONSE_LINE.match(first)):
             continue
         try:
-            messages.append(build_message(seg))
+            msg = build_message(seg)
+            # Look for a timestamp in the 300 chars immediately before this message
+            preceding = content[max(0, start - 300):start]
+            ts_hits = list(_TS_PATTERN.finditer(preceding))
+            if ts_hits:
+                msg["timestamp"] = ts_hits[-1].group()   # closest match
+            messages.append(msg)
         except Exception as exc:
             logger.debug(f"Skipping segment (parse error): {exc}")
 

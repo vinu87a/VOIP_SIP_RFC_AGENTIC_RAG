@@ -466,6 +466,33 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
             and ("dtmf" in text or "application/dtmf" in text or "signal=" in text)
         )
 
+    def _fmt_ts(raw: str) -> str:
+        """
+        Convert a raw timestamp value to HH:MM:SS.mmm for ladder display.
+        Accepts: Unix float string (PCAP), ISO datetime string, or HH:MM:SS string.
+        Returns '' if no timestamp available.
+        """
+        if not raw:
+            return ""
+        # Unix epoch float (from PCAP)
+        try:
+            import datetime
+            dt = datetime.datetime.fromtimestamp(float(raw))
+            return f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}.{dt.microsecond // 1000:03d}"
+        except (ValueError, TypeError, OSError):
+            pass
+        # Extract HH:MM:SS[.ms] from an already-formatted string
+        m_ts = re.search(r'\d{1,2}:\d{2}:\d{2}(?:[.,]\d{1,6})?', raw)
+        if m_ts:
+            raw_t = m_ts.group().replace(",", ".")
+            time_part, _, frac = raw_t.partition(".")
+            ms = frac[:3].ljust(3, "0") if frac else "000"
+            h, mi, s = (time_part.split(":") + ["0", "0"])[:3]
+            return f"{int(h):02d}:{int(mi):02d}:{int(s):02d}.{ms}"
+        return ""
+
+    _TS_W = 14   # "HH:MM:SS.mmm  " — 12 chars + 2 spaces
+
     flows = []
     for cid, msgs in dialogs.items():
         sorted_msgs = sorted(msgs, key=_sort_key)
@@ -485,22 +512,23 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
         col_w = max(20, min(36, 80 // n))
 
         # ── Build ASCII ladder ─────────────────────────────────────────────────
-        ladder: List[str] = []
+        # Each row is (timestamp_str, diagram_line); '' timestamp = no stamp.
+        rows: List[tuple] = []
 
-        # Header: endpoint labels (2 lines each: role + IP)
+        # Header: endpoint labels (role + IP)
         label_rows = [ep_labels.get(ip, ip).split("\n") for ip in seen_ips]
         max_hdr    = max(len(r) for r in label_rows)
         for row_i in range(max_hdr):
             parts = []
             for col_i in range(n):
-                rows = label_rows[col_i]
-                text = rows[row_i] if row_i < len(rows) else ""
+                r = label_rows[col_i]
+                text = r[row_i] if row_i < len(r) else ""
                 parts.append(f"{text:^{col_w}}")
-            ladder.append("".join(parts))
+            rows.append(("", "".join(parts)))
 
-        ladder.append("".join("|".center(col_w) for _ in range(n)))
+        rows.append(("", "".join("|".center(col_w) for _ in range(n))))
 
-        # Position of the last ACK — RTP bars are inserted after it
+        # Position of the last ACK — RTP bars inserted after it
         ack_pos = None
         for i, m in enumerate(sorted_msgs):
             if m.get("method") == "ACK":
@@ -514,6 +542,7 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
             method = m.get("method", "")
             code   = int(m.get("response_code") or 0)
             cseq   = m.get("cseq", "")
+            ts     = _fmt_ts(str(m.get("timestamp", "")))
 
             if method:
                 label = "DTMF INFO" if _is_dtmf(m) else method
@@ -527,17 +556,27 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
             src_idx = seen_ips.index(src_ip) if src_ip in seen_ips else 0
             dst_idx = seen_ips.index(dst_ip) if dst_ip in seen_ips else n - 1
 
-            ladder.append(_make_arrow_line(src_idx, dst_idx, label, n, col_w))
+            rows.append((ts, _make_arrow_line(src_idx, dst_idx, label, n, col_w)))
 
-            # Insert RTP bars right after the final ACK (media is now flowing)
+            # Insert RTP bars right after the final ACK
             if i == ack_pos and not rtp_inserted and rtp_streams:
                 for rtp in rtp_streams:
-                    ladder.append(_make_rtp_bar(rtp.get("text", ""), n, col_w))
+                    rows.append(("", _make_rtp_bar(rtp.get("text", ""), n, col_w)))
                 rtp_inserted = True
 
         if not rtp_inserted and rtp_streams:
             for rtp in rtp_streams:
-                ladder.append(_make_rtp_bar(rtp.get("text", ""), n, col_w))
+                rows.append(("", _make_rtp_bar(rtp.get("text", ""), n, col_w)))
+
+        # Prepend timestamps if any message has one
+        has_ts = any(ts for ts, _ in rows)
+        if has_ts:
+            ladder = [
+                f"{ts:<12}  {line}" if ts else f"{' ' * _TS_W}{line}"
+                for ts, line in rows
+            ]
+        else:
+            ladder = [line for _, line in rows]
 
         # Pre-join the ladder into a single string so the LLM can paste it
         # directly into a fenced code block without parsing the list.
