@@ -4,7 +4,21 @@ An agentic RAG system for SIP and VoIP protocol analysis. Ask protocol questions
 
 Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, and **Streamlit**.
 
-![LangGraph Agent Diagram](langgraph_diagram.png)
+---
+
+## Screenshots
+
+**Landing page** — sidebar with RFC knowledge base, trace upload, and example questions
+
+![Landing page](docs/screenshots/01_landing.png)
+
+**RFC Knowledge Base sidebar** — 23 RFCs organised by category
+
+![RFC Sidebar](docs/screenshots/02_sidebar_rfcs.png)
+
+**Chat response** — structured answer with inline RFC citations and response time
+
+![Chat response with RFC citations](docs/screenshots/04_answer_tall.png)
 
 ---
 
@@ -77,6 +91,8 @@ AgentOrchestrator (LangGraph StateGraph)
 **LLM routing:**
 - Primary: Groq `meta-llama/llama-4-scout-17b-16e-instruct`
 - Fallback: Ollama `gemma4:e4b` (activated automatically on Groq HTTP 429)
+
+![LangGraph Agent Diagram](langgraph_diagram.png)
 
 ---
 
