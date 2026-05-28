@@ -47,8 +47,10 @@ Use this when the user asks about their specific capture file.
 
 3. **reconstruct_call_flow** — Returns a pre-formatted ASCII ladder diagram of the full \
 SIP dialog (endpoints labelled UAC / Proxy / UAS, RTP stream bars after ACK, DTMF markers). \
-The result's "flow" list contains the ladder lines — join them with newlines and place \
-verbatim in a fenced code block. Never rewrite or summarise the ladder output.
+Each dialog in the result has a **"ladder"** key containing the complete diagram as a single \
+string. Place dialogs[N]["ladder"] VERBATIM inside a fenced code block. \
+FORBIDDEN: rewriting the ladder as "UAC -> INVITE", "Proxy -> 100 Trying", or any other \
+plain-text format — only the raw ladder string is acceptable.
 
 4. **diagnose_sip_error** — Look up a specific SIP response code (4xx, 5xx, 6xx) in the \
 RFC knowledge base. Use this when an error code appears in the trace or the user's question.

@@ -84,10 +84,11 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                 "Reconstruct the ordered SIP call flow from the uploaded trace as an "
                 "ASCII ladder diagram. Groups messages by Call-ID, sorts by CSeq, "
                 "labels endpoints (UAC / Proxy / UAS), and embeds RTP stream bars and "
-                "DTMF markers. The result contains a 'flow' list of pre-formatted lines "
-                "that form the ladder — join them with newlines and place verbatim in a "
-                "fenced code block. Never rewrite or summarise the ladder; reproduce it "
-                "character-for-character."
+                "DTMF markers. Each dialog in the result has a 'ladder' key containing "
+                "the complete pre-formatted ASCII diagram as a single string. "
+                "To render Section 2: take dialogs[N]['ladder'] and place it inside a "
+                "fenced code block (``` ... ```) VERBATIM — do not rewrite, paraphrase, "
+                "or convert it to plain text under any circumstances."
             ),
             "parameters": {
                 "type": "object",
@@ -496,10 +497,15 @@ def _reconstruct_call_flow(args: Dict, vs) -> Dict:
             for rtp in rtp_streams:
                 ladder.append(_make_rtp_bar(rtp.get("text", ""), n, col_w))
 
+        # Pre-join the ladder into a single string so the LLM can paste it
+        # directly into a fenced code block without parsing the list.
+        ladder_str = "\n".join(ladder)
+
         flows.append({
             "call_id":       cid,
             "message_count": len(msgs),
-            "flow":          ladder,
+            "flow":          ladder,       # kept for Streamlit UI rendering
+            "ladder":        ladder_str,   # paste this verbatim into ``` block
         })
 
     return {"total_messages": len(all_msgs), "dialogs": flows}

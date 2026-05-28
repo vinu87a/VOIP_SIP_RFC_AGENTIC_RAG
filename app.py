@@ -64,11 +64,14 @@ The SIP trace is already loaded. Analyse it using the trace tools and produce
 a structured report.
 
 ━━━ TOOL WORKFLOW (mandatory — follow this order) ━━━
-1. Call reconstruct_call_flow first. The result contains a "flow" list of
-   pre-formatted ASCII ladder lines. Join those lines with newlines and place
-   them VERBATIM inside a fenced code block for Section 2. Do NOT rewrite,
-   summarise, or invent a call flow — copy the exact characters from the tool
-   result. If the ladder is empty, state "No SIP messages found in trace."
+1. Call reconstruct_call_flow first. Each dialog in the result has a "ladder"
+   key that is a ready-to-paste ASCII diagram string. For Section 2, write:
+       ```
+       <dialogs[0]["ladder"] value here — copied character-for-character>
+       ```
+   Do NOT rewrite, paraphrase, or convert the ladder to plain text.
+   Do NOT write lines like "UAC -> INVITE" or "Proxy -> 100 Trying".
+   If the ladder is empty, state "No SIP messages found in trace."
 2. For each section below, use targeted search_trace calls to retrieve the
    specific messages you need (INVITE, error responses, SDP bodies, auth
    headers, RTP stream summaries, etc.).
@@ -87,10 +90,11 @@ produce placeholder text such as "no data available" or "not present in trace"
 ━━━ SECTIONS TO COVER (if present in the trace) ━━━
   1. Trace overview — detected scenario type, Call-ID(s), endpoints, message
      count, timestamp range, call direction
-  2. Call flow diagram — the ASCII ladder from reconstruct_call_flow, placed
-     verbatim in a fenced code block. Endpoints are labelled UAC / Proxy / UAS.
-     RTP stream bars (═══) appear after the ACK. DTMF INFO events are labelled.
-     CRITICAL: reproduce the ladder exactly — do not paraphrase or rewrite it.
+  2. Call flow diagram — place dialogs[N]["ladder"] from reconstruct_call_flow
+     verbatim inside a fenced code block. The ladder has UAC/Proxy/UAS column
+     headers, arrow rows, RTP bars (═══) after ACK, and DTMF labels.
+     FORBIDDEN: writing "UAC -> INVITE", "Proxy -> 100 Trying", or any plain-
+     text rewrite of the ladder. Only the raw ladder string is acceptable.
   3. Codec & SDP negotiation — offered vs answered codecs, SDP body diffs,
      dynamic payload type mapping, a=rtpmap / a=fmtp verification
   4. RTP / media analysis — media IP/port, SSRC, ptime, directionality,
