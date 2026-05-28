@@ -45,11 +45,11 @@ You can narrow the search to specific RFC numbers using the optional rfc_filter.
 2. **search_trace** — Semantically search the uploaded SIP trace (if one has been provided). \
 Use this when the user asks about their specific capture file.
 
-3. **reconstruct_call_flow** — Rebuilds the full SIP dialog as an ASCII ladder diagram \
-(endpoints labelled UAC / Proxy / UAS, RTP stream bars after ACK, DTMF markers). \
-The ladder is rendered automatically in the UI expander — do NOT reproduce it in your \
-text response. In your answer, summarise the sequence as a compact arrow chain \
-(e.g. INVITE → 100 Trying → 488 → ACK) and reference the expander for the full diagram.
+3. **reconstruct_call_flow** — Must be called whenever a trace is loaded. Calling it \
+generates the full ASCII ladder diagram (UAC / Proxy / UAS columns, RTP bars, DTMF \
+markers) and triggers it to appear in a dedicated UI expander below your response. \
+In your text, summarise the sequence as a compact arrow chain \
+(e.g. INVITE → 100 Trying → 488 → ACK). Do NOT reproduce the ladder in text.
 
 4. **diagnose_sip_error** — Look up a specific SIP response code (4xx, 5xx, 6xx) in the \
 RFC knowledge base. Use this when an error code appears in the trace or the user's question.

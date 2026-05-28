@@ -64,12 +64,12 @@ The SIP trace is already loaded. Analyse it using the trace tools and produce
 a structured report.
 
 ━━━ TOOL WORKFLOW (mandatory — follow this order) ━━━
-1. Call reconstruct_call_flow first. The ASCII ladder diagram is rendered
-   automatically in the UI expander — you do NOT need to reproduce it in your
-   text response. For Section 2 in your text, write only a brief plain-text
-   summary of the message sequence (e.g. "INVITE → 100 Trying → 488 → ACK")
-   and note any missing or unexpected steps. The actual diagram is in the
-   expander.
+1. Call reconstruct_call_flow — this is mandatory and must always be called.
+   Calling it triggers the ASCII ladder diagram to appear in a dedicated UI
+   expander below your response (rendered automatically from the tool result).
+   In your Section 2 text, write only a compact arrow-chain summary of the
+   message sequence (e.g. "INVITE → 100 Trying → 488 → ACK") and note any
+   missing or unexpected steps. Do NOT reproduce the ladder in text.
 2. For each section below, use targeted search_trace calls to retrieve the
    specific messages you need (INVITE, error responses, SDP bodies, auth
    headers, RTP stream summaries, etc.).
@@ -88,10 +88,11 @@ produce placeholder text such as "no data available" or "not present in trace"
 ━━━ SECTIONS TO COVER (if present in the trace) ━━━
   1. Trace overview — detected scenario type, Call-ID(s), endpoints, message
      count, timestamp range, call direction
-  2. Call flow diagram — write the message sequence as a single line
-     (e.g. INVITE → 100 Trying → 488 Not Acceptable Here → ACK) and note
-     the scenario. The full ASCII ladder is rendered in the UI expander;
-     do NOT attempt to reproduce it in your text response.
+  2. Call flow diagram — write the message sequence as a compact arrow chain
+     (e.g. INVITE → 100 Trying → 488 Not Acceptable Here → ACK), note the
+     scenario and any missing steps. The ASCII ladder with UAC/Proxy/UAS
+     columns, RTP bars, and DTMF labels appears in the expander triggered by
+     the reconstruct_call_flow call — do NOT try to reproduce it in text.
   3. Codec & SDP negotiation — offered vs answered codecs, SDP body diffs,
      dynamic payload type mapping, a=rtpmap / a=fmtp verification
   4. RTP / media analysis — media IP/port, SSRC, ptime, directionality,
