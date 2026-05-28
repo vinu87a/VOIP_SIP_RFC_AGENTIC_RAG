@@ -25,6 +25,7 @@ Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, and **Streamli
 ## Features
 
 - **RFC Knowledge Base** — 23 SIP/RTP/SDP RFCs ingested, chunked, and embedded into a local ChromaDB vector store
+- **Hybrid BM25 + semantic search** — every RFC query runs dense (cosine/HNSW) and sparse (BM25Okapi) retrieval in parallel, fused with Reciprocal Rank Fusion (RRF); handles both natural-language questions and isolated acronyms equally well
 - **Agentic reasoning** — LangGraph ReAct loop with up to 14 tool-call iterations per query
 - **SIP trace analysis** — upload a `.pcap` or SIP text capture; the agent reconstructs the call flow, extracts SDP bodies, and diagnoses errors
 - **Document Q&A** — upload PDFs, DOCX, HTML, or plain text files; the agent searches them alongside the RFC knowledge base

@@ -126,12 +126,17 @@ VectorStore
 ├── __init__()
 ├── _get_or_create(name) → Collection
 │
+├── BM25 Index (in-memory, RFC corpus only)
+│   ├── _tokenize(text) → List[str]                 [static, private]
+│   ├── _build_bm25_index()                          [private]
+│   ├── _bm25_search_rfc(query, top_k, rfc_filter) → List[Dict]  [private]
+│   └── _rrf_merge(semantic, bm25, top_k, k) → List[Dict]        [static, private]
+│
 ├── RFC Collection API
 │   ├── rfc_count() → int
 │   ├── add_rfc_chunks(chunks)
 │   ├── search_rfc(query, top_k, rfc_filter) → List[Dict]
-│   ├── _parse_rfc_query(res) → List[Dict]          [private]
-│   ├── _keyword_search_rfc(query, top_k, where) → List[Dict]  [private]
+│   ├── _parse_rfc_query(res) → List[Dict]           [private]
 │   └── clear_rfcs()
 │
 ├── Trace Collection API
@@ -161,7 +166,9 @@ Step 3: SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2", devi
 Step 4: get_or_create "sip_rfcs"    (cosine, persistent)
 Step 5: delete + recreate "sip_trace" (cosine, ephemeral — cleared on each app start)
 Step 6: get_or_create "user_docs"   (cosine, persistent)
-Step 7: log counts of all three collections
+Step 7: If rfc_col.count() > 0: _build_bm25_index()   ← eager build on startup
+        Else: set _bm25_index = None                   ← lazy build on first search
+Step 8: log counts of all three collections
 ```
 
 **Why trace is ephemeral:** A SIP trace is session-specific; users load a new capture per session. Clearing on init ensures no stale trace from a previous session leaks into new analysis.
@@ -203,25 +210,75 @@ Upserts RFC chunks in batches of 500 to respect ChromaDB limits.
 
 Uses `upsert` (not `add`) so re-indexing is idempotent — running twice does not duplicate chunks.
 
+After upserting, sets `self._bm25_index = None` to **invalidate** the in-memory BM25 index. The index is rebuilt lazily on the next `search_rfc` call, ensuring it reflects all newly added chunks without rebuilding 23 times during the initial ingest of 23 RFCs.
+
+#### BM25 Index Methods
+
+##### `_tokenize(text: str) → List[str]`  *(static)*
+
+```python
+return re.findall(r'[a-zA-Z0-9]+', text.lower())
+```
+
+Lowercase alphanumeric tokenization. Keeps RFC acronyms (`pcfg`, `srtp`, `ssrc`) as single tokens. No stemming or stopword removal — RFC vocabulary is too specialised for general NLP preprocessing.
+
+##### `_build_bm25_index() → None`
+
+Pulls every document and metadata entry from the `sip_rfcs` ChromaDB collection via `get(include=["documents", "metadatas"])`. Tokenizes each document with `_tokenize` and builds a `BM25Okapi` index from the token lists. The parallel `_bm25_corpus` list stores the original text and metadata for each entry at the same index position, enabling O(1) metadata lookup after scoring.
+
+Time complexity: O(N × L) where N = corpus size (1,806 chunks), L = average tokens per chunk. Typical build time < 500ms on CPU.
+
+##### `_bm25_search_rfc(query, top_k, rfc_filter) → List[Dict]`
+
+```
+1. tokens = _tokenize(query)
+2. scores = self._bm25_index.get_scores(tokens)   ← numpy array, one score per chunk
+3. If rfc_filter: set scores[i] = 0.0 for all i where corpus[i].rfc_no ∉ rfc_filter
+4. ranked = argsort(scores, descending)
+5. Return top_k entries where score > 0.0
+```
+
+`rfc_filter` is applied as a **post-scoring mask** rather than by rebuilding a filtered index. This is correct because `get_scores` is already vectorised over the full corpus; zeroing non-matching entries before ranking is O(N) and avoids the overhead of constructing a sub-index.
+
+##### `_rrf_merge(semantic, bm25, top_k, k=60) → List[Dict]`  *(static)*
+
+Reciprocal Rank Fusion (Cormack et al., 2009):
+
+```
+For each result list (semantic, bm25):
+  For rank, chunk in enumerate(list):
+    rrf_scores[chunk_key] += 1.0 / (k + rank + 1)
+
+Sort all chunks by rrf_scores descending → return top_k
+```
+
+`k=60` is the standard constant from the original paper. It prevents the top-ranked item from dominating (score ≈ 1/61 ≈ 0.016) and makes fusion stable even when one retriever is highly confident. A chunk appearing at rank 1 in both lists scores ≈ 0.033; a chunk appearing at rank 1 in only one list scores ≈ 0.016.
+
+The raw cosine-similarity score and raw BM25 score are **not used** in the merge — only rank positions matter. This makes the fusion robust to the incompatible score scales of the two retrievers (cosine: [0,1]; BM25: unbounded float).
+
+De-duplication uses the first 80 characters of chunk text as the key; the semantic pass's metadata is preferred for any chunk that appears in both lists.
+
 #### `search_rfc(query, top_k, rfc_filter) → List[Dict]`
 
-Two-pass hybrid search:
+Fully hybrid search — both passes always run, no score threshold gate:
 
 ```
-Pass 1 — Semantic (always runs)
-  └── ChromaDB cosine query on embedded query text
-  └── Returns top_k results
+If _bm25_index is None: _build_bm25_index()   ← lazy rebuild after ingest
 
-Pass 2 — Keyword fallback (only if top semantic score < 0.45)
-  └── ChromaDB $contains substring match on raw text
-  └── Tries query as-is; if no hits, tries query.upper()
-  └── Merges new hits into results (dedup by first 80 chars)
-  └── Truncates merged list to top_k
+candidates = min(top_k * 2, rfc_count)       ← fetch 2× for better fusion pool
+
+Pass 1 — Dense semantic retrieval
+  └── ChromaDB cosine/HNSW query, n_results=candidates
+  └── Optional where={"rfc_no": {"$in": rfc_filter}}
+
+Pass 2 — Sparse BM25 retrieval
+  └── _bm25_search_rfc(query, candidates, rfc_filter)
+
+Fusion
+  └── _rrf_merge(semantic_results, bm25_results, top_k)
 ```
 
-**Why the 0.45 threshold?** Short technical acronyms like `"pcfg"`, `"acfg"`, `"srtp"`, `"ssrc"` have low embedding similarity to the surrounding RFC text because their meaning is too compressed to project well onto the embedding space. The keyword fallback recovers these.
-
-**`rfc_filter`** parameter: when supplied as `[3261, 3264]`, the ChromaDB `where` clause filters to only those RFC numbers: `{"rfc_no": {"$in": [3261, 3264]}}`.
+**`rfc_filter`** is enforced independently in both passes: as a ChromaDB `where` clause for the dense pass and as a score-zeroing mask for the BM25 pass.
 
 **Return schema (per hit):**
 
@@ -232,20 +289,18 @@ Pass 2 — Keyword fallback (only if top semantic score < 0.45)
 | `rfc_title` | `str` |
 | `section_no` | `str` |
 | `section_title` | `str` |
-| `score` | `float` — cosine similarity in [0, 1] |
-
-#### `_keyword_search_rfc(query, top_k, where_clause) → List[Dict]`
-
-Calls `self._rfc_col.get(where_document={"$contains": term})`. Assigns a nominal score of `0.50` to all keyword hits (used as a fixed placeholder, not a real similarity). The inner `_fetch(term)` function is defined locally and called twice: once with `query`, once with `query.upper()` if the first attempt returns nothing.
+| `score` | `float` — RRF fusion score (≈ 0.016–0.033 range) |
 
 #### `clear_rfcs() → None`
 
 ```python
 self._client.delete_collection(_RFC_COLLECTION)
-self._rfc_col = self._get_or_create(_RFC_COLLECTION)
+self._rfc_col     = self._get_or_create(_RFC_COLLECTION)
+self._bm25_index  = None
+self._bm25_corpus = []
 ```
 
-Drops the `sip_rfcs` collection from ChromaDB and immediately recreates an empty one. This ensures `rfc_count() == 0` after the call, which triggers `_ensure_rfc_index()` in `app.py` to re-fetch and re-embed all RFCs on the next run.
+Drops the `sip_rfcs` collection from ChromaDB, recreates an empty one, and clears the in-memory BM25 index and corpus. This ensures `rfc_count() == 0` after the call, which triggers `_ensure_rfc_index()` in `app.py` to re-fetch and re-embed all RFCs on the next run. The BM25 index will be rebuilt lazily on the first `search_rfc` call after re-indexing completes.
 
 ---
 
@@ -1398,7 +1453,9 @@ app.py → orchestrator.run(query, trace_active, docs_info)
         │                         ├── StructuredTool.search_rfc(query, ...)
         │                         │     └── execute_tool("search_rfc", args, vs)
         │                         │           └── vs.search_rfc(query)
-        │                         │                 └── ChromaDB cosine query
+        │                         │                 ├── Pass 1: ChromaDB cosine/HNSW query
+        │                         │                 ├── Pass 2: BM25Okapi.get_scores()
+        │                         │                 └── _rrf_merge() → top_k results
         │                         │
         │                         └── returns ToolMessage(content=json_str, tool_call_id=...)
         │

@@ -147,7 +147,7 @@ Six tools the LLM can invoke. Each tool is defined twice:
 
 | Tool | Purpose |
 |------|---------|
-| `search_rfc` | Semantic + keyword hybrid search over RFC knowledge base |
+| `search_rfc` | BM25 + semantic hybrid search over RFC knowledge base, fused with RRF |
 | `search_trace` | Semantic search over uploaded SIP trace |
 | `reconstruct_call_flow` | Rebuild ordered dialog from trace by Call-ID / CSeq |
 | `diagnose_sip_error` | Look up RFC definition of a SIP response code |
@@ -167,7 +167,7 @@ At runtime, `orchestrator.py` appends a dynamic `## Trace Status` and `## User D
 
 ### 4.5 Vector Store (`store/vector_store.py`)
 
-Thin wrapper around three **ChromaDB** collections, all using cosine-similarity with `all-MiniLM-L6-v2` embeddings:
+Thin wrapper around three **ChromaDB** collections using cosine-similarity with `all-MiniLM-L6-v2` embeddings. RFC search additionally maintains an in-memory **BM25Okapi** index (built from the same corpus) and fuses both retrieval signals using **Reciprocal Rank Fusion (RRF)**:
 
 | Collection | Persistence | Purpose |
 |-----------|-------------|---------|
@@ -282,10 +282,11 @@ Central configuration file. Key settings:
   │  │  execute search_rfc(query="pcfg potential configuration",│  │
   │  │                     rfc_filter=[5939])                  │  │
   │  │                                                         │  │
-  │  │  → Hybrid search: semantic (score 0.61) +               │  │
-  │  │    keyword fallback ("$contains": "pcfg")               │  │
+  │  │  → Pass 1: Dense semantic search (cosine/HNSW)          │  │
+  │  │  → Pass 2: BM25 sparse search (TF-IDF weighted)         │  │
+  │  │  → RRF fusion: score = Σ 1/(60 + rank)                  │  │
   │  │                                                         │  │
-  │  │  ToolMessage: {results: [{source: "RFC 5939 §4",        │  │
+  │  │  ToolMessage: {results: [{source: "RFC 5939 §3.5.1",    │  │
   │  │    content: "a=pcfg (potential configuration)..."}]}    │  │
   │  └─────────────────────────────────────────────────────────┘  │
   │                   │ loop back to agent                         │
@@ -473,6 +474,7 @@ The combination of `_with_tools` and `_plain` variants is needed because:
 | Fallback LLM | Ollama (local) | — | Gemma 4 E4B, HTTP 429 fallback |
 | Vector DB | ChromaDB | ≥0.5 | Persistent cosine-similarity store |
 | Embeddings | Sentence-Transformers | ≥2.7 | all-MiniLM-L6-v2, local CPU |
+| Sparse Retrieval | rank-bm25 | ≥0.2.2 | BM25Okapi index over RFC corpus |
 | PDF Parsing | pypdf | ≥3.0 | Page-by-page text extraction |
 | DOCX Parsing | python-docx | ≥1.0 | Paragraph extraction |
 | HTML Parsing | BeautifulSoup4 | ≥4.12 | Tag stripping, text extraction |
@@ -483,8 +485,24 @@ The combination of `_with_tools` and `_plain` variants is needed because:
 
 ## 11. Key Design Decisions
 
-### 11.1 Hybrid Search (Semantic + Keyword)
-Short abbreviations like `pcfg`, `acfg`, `srtp` embed poorly in isolation — their cosine similarity against queries that contain only the abbreviation is typically < 0.45. The system checks the top semantic score; if it falls below this threshold, a second pass using ChromaDB's `$contains` substring match is triggered. Results from both passes are merged and de-duplicated. This handles protocol-specific acronyms that embedding models were not trained on.
+### 11.1 Hybrid Search (BM25 + Semantic + RRF)
+Short technical abbreviations like `pcfg`, `acfg`, `srtp`, `ssrc` produce low-quality embeddings because `all-MiniLM-L6-v2` rarely saw them in training. Relying on semantic search alone causes poor recall for acronym-heavy queries.
+
+The system runs **two independent retrieval passes on every query** and fuses them with **Reciprocal Rank Fusion (Cormack et al., 2009)**:
+
+1. **Dense pass** — ChromaDB HNSW cosine-similarity search using `all-MiniLM-L6-v2` embeddings. Strong on natural-language questions and paraphrased queries.
+2. **Sparse pass** — `BM25Okapi` (rank-bm25) over the full RFC corpus. Strong on exact term matches, acronyms, and header names like `Via`, `CSeq`, `RSeq`.
+
+Each pass independently retrieves `top_k × 2` candidates. RRF merges them by rank position:
+
+```
+RRF_score(chunk) = Σ  1 / (k + rank(chunk))     k = 60
+                   over each list containing chunk
+```
+
+Neither the raw cosine-similarity score nor the BM25 score is used directly — only rank position matters, making the fusion robust to the very different score scales of the two retrievers. When `rfc_filter` is specified, BM25 scores for non-matching RFCs are zeroed before ranking.
+
+The BM25 index is built in-memory at startup (or lazily after ingest) by pulling all 1,806 RFC chunks from ChromaDB and tokenising with `re.findall(r'[a-zA-Z0-9]+', text.lower())`.
 
 ### 11.2 Deterministic Tool-Name Sanitiser
 The Llama 4 Scout model occasionally mentions internal tool names (`search_rfc`, `cross_reference`, etc.) in its final answer text. Prompt instructions alone are insufficient. A deterministic regex post-processor (`_sanitize_answer`) is applied after every LLM response — it drops any bullet or prose sentence that contains a tool name, independent of what the model says.
@@ -512,6 +530,6 @@ The LangGraph loop is capped at `MAX_ITERATIONS = 14` agent turns. When this lim
 | JS-rendered URLs | BeautifulSoup cannot extract text from SPAs | Warning shown to user |
 | No real-time capture | Cannot analyse live traffic | Upload-only model |
 | Scapy requires root on some OS | PCAP parsing may fail | Error message shown |
-| MiniLM-L6-v2 limited vocabulary | Poor embeddings for novel acronyms | Hybrid keyword fallback |
+| MiniLM-L6-v2 limited vocabulary | Poor embeddings for novel acronyms | BM25 sparse retrieval + RRF fusion |
 | Single-user architecture | No auth / user isolation | Designed for local use |
 | Llama 4 Scout tool-name leakage | Mentions internal tool names in answers | `_sanitize_answer` post-processor |
