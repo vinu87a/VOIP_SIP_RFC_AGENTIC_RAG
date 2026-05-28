@@ -81,10 +81,13 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "function": {
             "name": "reconstruct_call_flow",
             "description": (
-                "Reconstruct the ordered SIP call flow from the uploaded trace. "
-                "Groups messages by Call-ID and sorts by CSeq number. "
-                "Use to understand the full dialog sequence "
-                "(INVITE → 100 Trying → 180 Ringing → 200 OK → ACK → BYE → 200 OK)."
+                "Reconstruct the ordered SIP call flow from the uploaded trace as an "
+                "ASCII ladder diagram. Groups messages by Call-ID, sorts by CSeq, "
+                "labels endpoints (UAC / Proxy / UAS), and embeds RTP stream bars and "
+                "DTMF markers. The result contains a 'flow' list of pre-formatted lines "
+                "that form the ladder — join them with newlines and place verbatim in a "
+                "fenced code block. Never rewrite or summarise the ladder; reproduce it "
+                "character-for-character."
             ),
             "parameters": {
                 "type": "object",

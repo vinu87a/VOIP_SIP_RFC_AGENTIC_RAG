@@ -45,8 +45,10 @@ You can narrow the search to specific RFC numbers using the optional rfc_filter.
 2. **search_trace** — Semantically search the uploaded SIP trace (if one has been provided). \
 Use this when the user asks about their specific capture file.
 
-3. **reconstruct_call_flow** — Rebuild the ordered SIP dialog from the trace by grouping \
-messages by Call-ID and sorting by CSeq. Use this to understand a call's progression.
+3. **reconstruct_call_flow** — Returns a pre-formatted ASCII ladder diagram of the full \
+SIP dialog (endpoints labelled UAC / Proxy / UAS, RTP stream bars after ACK, DTMF markers). \
+The result's "flow" list contains the ladder lines — join them with newlines and place \
+verbatim in a fenced code block. Never rewrite or summarise the ladder output.
 
 4. **diagnose_sip_error** — Look up a specific SIP response code (4xx, 5xx, 6xx) in the \
 RFC knowledge base. Use this when an error code appears in the trace or the user's question.

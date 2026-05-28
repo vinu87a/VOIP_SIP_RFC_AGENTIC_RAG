@@ -142,9 +142,13 @@ def _make_lc_tools(vector_store) -> List[StructuredTool]:
             func=reconstruct_call_flow,
             name="reconstruct_call_flow",
             description=(
-                "Reconstruct the ordered SIP call flow from the uploaded trace, grouped "
-                "by Call-ID and sorted by CSeq. Use to see the full dialog sequence: "
-                "INVITE → 100 Trying → 180 Ringing → 200 OK → ACK → BYE."
+                "Reconstruct the ordered SIP call flow from the uploaded trace as an "
+                "ASCII ladder diagram. Groups messages by Call-ID, sorts by CSeq, "
+                "labels endpoints (UAC / Proxy / UAS), and embeds RTP stream bars and "
+                "DTMF markers. The result contains a 'flow' list of pre-formatted lines "
+                "that form the ladder — join them with newlines and place verbatim in a "
+                "fenced code block. Never rewrite or summarise the ladder; reproduce it "
+                "character-for-character."
             ),
             args_schema=_ReconstructCallFlowInput,
         ),
