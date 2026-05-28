@@ -376,6 +376,21 @@ class AgentOrchestrator:
         docs_info: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         trace_count = self._vs.trace_count() if trace_active else 0
+
+        # ── Pre-compute call flow so the UI expander always shows ─────────────
+        # The agent sometimes skips calling reconstruct_call_flow and writes
+        # its own call-flow description from training knowledge. Pre-computing
+        # here guarantees the ASCII ladder expander appears regardless.
+        precomputed_cf: Optional[Dict] = None
+        if trace_active and trace_count > 0:
+            try:
+                from agent.tools import execute_tool as _exec_tool
+                cf = _exec_tool("reconstruct_call_flow", {"call_id_filter": ""}, self._vs)
+                if cf.get("dialogs"):
+                    precomputed_cf = cf
+            except Exception:
+                pass
+
         if trace_active and trace_count > 0:
             trace_status = (
                 f"\n\n## Trace Status\n"
@@ -473,6 +488,10 @@ class AgentOrchestrator:
         last_msg = messages[-1]
         raw_answer = last_msg.content if hasattr(last_msg, "content") else ""
         answer     = _sanitize_answer(raw_answer)
+
+        # Fall back to the pre-computed call flow if the agent skipped the tool
+        if call_flow_result is None and precomputed_cf is not None:
+            call_flow_result = precomputed_cf
 
         rate_limited = final_state.get("groq_rate_limited", False)
         return {
