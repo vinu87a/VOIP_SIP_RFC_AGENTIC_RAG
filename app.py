@@ -44,6 +44,10 @@ RFC_CATEGORIES = {
         "color": "#7c3aed", "bg": "rgba(139,92,246,0.1)", "text": "#7c3aed",
         "rfcs": {3665: "SIP Basic Call Flow Examples", 3428: "SIP Instant Messaging"},
     },
+    "DTMF & INFO": {
+        "color": "#be185d", "bg": "rgba(190,24,93,0.1)", "text": "#be185d",
+        "rfcs": {4733: "RTP Payload for DTMF (telephone-event)", 6086: "SIP INFO Method & Package Framework"},
+    },
 }
 
 EXAMPLE_QUESTIONS = [
