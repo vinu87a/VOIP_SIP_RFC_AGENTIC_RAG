@@ -769,7 +769,7 @@ def _on_doc_upload_change():
 
 def _render_sidebar(vs):
     with st.sidebar:
-        # Brand header
+        # ── 1. Brand header ───────────────────────────────────────────────────
         st.markdown("""
 <div class="app-brand">
   <span class="brand-icon">📡</span>
@@ -780,7 +780,81 @@ def _render_sidebar(vs):
 </div>
 """, unsafe_allow_html=True)
 
-        # ── Trace upload ──────────────────────────────────────────────────────
+        # ── 2. Observability (TruLens) ────────────────────────────────────────
+        st.markdown(
+            '<div class="section-pill" style="background:rgba(139,92,246,0.1);'
+            'color:#7c3aed;border:1px solid rgba(139,92,246,0.3)">📊 Observability</div>',
+            unsafe_allow_html=True,
+        )
+        try:
+            from observability.trulens_setup import get_tru_session
+            _tru = get_tru_session()
+            _lb = _tru.get_leaderboard()
+            if not _lb.empty:
+                _score_cols = ["Answer Relevance", "Context Relevance", "Groundedness"]
+                _labels     = ["Answer", "Context", "Grounded"]
+
+                def _score_color(v):
+                    if v is None:
+                        return "#94a3b8", "rgba(148,163,184,0.12)", "#94a3b8"
+                    if v >= 0.8:
+                        return "#059669", "rgba(16,185,129,0.12)", "rgba(16,185,129,0.35)"
+                    if v >= 0.5:
+                        return "#d97706", "rgba(245,158,11,0.12)", "rgba(245,158,11,0.35)"
+                    return "#dc2626", "rgba(239,68,68,0.12)", "rgba(239,68,68,0.35)"
+
+                chips_html = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 4px;">'
+                for _metric, _label in zip(_score_cols, _labels):
+                    _val = _lb[_metric].mean() if _metric in _lb.columns else None
+                    _text, _bg, _border = _score_color(_val)
+                    _display = f"{_val:.2f}" if _val is not None else "—"
+                    chips_html += (
+                        f'<div style="flex:1;min-width:72px;text-align:center;'
+                        f'background:{_bg};border:1px solid {_border};'
+                        f'border-radius:10px;padding:7px 4px 6px;">'
+                        f'<div style="font-size:0.66rem;font-weight:700;color:#64748b;'
+                        f'letter-spacing:0.04em;text-transform:uppercase;margin-bottom:3px;">'
+                        f'{_label}</div>'
+                        f'<div style="font-size:1.25rem;font-weight:800;color:{_text};'
+                        f'line-height:1;">{_display}</div>'
+                        f'</div>'
+                    )
+                chips_html += '</div>'
+                st.markdown(chips_html, unsafe_allow_html=True)
+
+                try:
+                    import sqlite3 as _sqlite3
+                    from observability.trulens_setup import _DB_PATH
+                    _conn = _sqlite3.connect(_DB_PATH)
+                    _n = _conn.execute(
+                        "SELECT count(*) FROM trulens_records r "
+                        "JOIN trulens_apps a ON r.app_id = a.app_id "
+                        "WHERE a.app_name = 'sip-rfc-rag'"
+                    ).fetchone()[0]
+                    _conn.close()
+                except Exception:
+                    _n = "?"
+                st.caption(f"{_n} queries evaluated · 🟢 ≥0.8 · 🟡 ≥0.5 · 🔴 <0.5")
+            else:
+                st.caption("No evaluations yet — ask a question to start.")
+        except Exception:
+            st.caption("TruLens observability active.")
+
+        if st.button("🖥️ TruLens Dashboard", use_container_width=True, key="trulens_dash"):
+            import subprocess as _sp, sys as _sys
+            _cwd = os.path.dirname(os.path.abspath(__file__))
+            _script = (
+                f"import os; os.chdir(r'{_cwd}'); "
+                "from observability.trulens_setup import get_tru_session; "
+                "get_tru_session().run_dashboard(port=8502, force=True)"
+            )
+            _sp.Popen([_sys.executable, "-c", _script])
+            st.session_state.trulens_dashboard_launched = True
+        if st.session_state.get("trulens_dashboard_launched"):
+            st.success("Dashboard → [http://localhost:8502](http://localhost:8502)")
+
+        # ── 3. SIP Trace upload ───────────────────────────────────────────────
+        st.divider()
         st.markdown('<div class="section-pill sp-trace">📎 SIP Trace</div>', unsafe_allow_html=True)
 
         uploaded = st.file_uploader(
@@ -856,47 +930,8 @@ def _render_sidebar(vs):
         else:
             st.caption("No trace loaded · upload a .txt / .pcap / .html file")
 
-        # ── RFC knowledge base ────────────────────────────────────────────────
-        st.markdown('<div class="section-pill sp-rfc">📚 RFC Knowledge Base</div>', unsafe_allow_html=True)
-
-        rfc_chunk_count = vs.rfc_count()
-        st.markdown(f"""
-<div class="stats-row">
-  <span class="stat-chip sc-purple">📄 {rfc_chunk_count:,} RFC chunks</span>
-  <span class="stat-chip sc-green">🏛️ 25 RFCs</span>
-  <span class="stat-chip sc-cyan">🔡 MiniLM-L6</span>
-</div>
-""", unsafe_allow_html=True)
-
-        for cat_name, cat in RFC_CATEGORIES.items():
-            st.markdown(
-                f'<div class="rfc-category-label" style="background:{cat["bg"]};color:{cat["text"]}">'
-                f'{cat_name}</div>',
-                unsafe_allow_html=True,
-            )
-            rows_html = "".join(
-                f'<div class="rfc-row">'
-                f'<span class="rfc-num-badge">{rfc_no}</span>'
-                f'<span>{title}</span>'
-                f'</div>'
-                for rfc_no, title in cat["rfcs"].items()
-            )
-            st.markdown(rows_html, unsafe_allow_html=True)
-
-        if st.button("🔄 Re-index RFCs", use_container_width=True):
-            # Wipe the RFC collection so _ensure_rfc_index triggers on rerun.
-            # Fallback to direct client call when the cached instance predates the method.
-            try:
-                vs.clear_rfcs()
-            except AttributeError:
-                try:
-                    vs._client.delete_collection("sip_rfcs")
-                except Exception:
-                    pass
-            _get_vector_store.clear()
-            st.rerun()
-
-        # ── Document library ──────────────────────────────────────────────────
+        # ── 4. Document library ───────────────────────────────────────────────
+        st.divider()
         doc_chunk_count = vs.doc_count()
         doc_count_label = f"{doc_chunk_count:,} chunks" if doc_chunk_count else "empty"
         st.markdown(
@@ -999,85 +1034,49 @@ def _render_sidebar(vs):
         else:
             st.caption("No documents uploaded yet.")
 
-        # ── Observability (TruLens) ───────────────────────────────────────────
-        st.divider()
-        st.markdown(
-            '<div class="section-pill" style="background:rgba(139,92,246,0.1);'
-            'color:#7c3aed;border:1px solid rgba(139,92,246,0.3)">📊 Observability</div>',
-            unsafe_allow_html=True,
-        )
-        try:
-            from observability.trulens_setup import get_tru_session
-            _tru = get_tru_session()
-            _lb = _tru.get_leaderboard()
-            if not _lb.empty:
-                _score_cols = ["Answer Relevance", "Context Relevance", "Groundedness"]
-                _labels     = ["Answer", "Context", "Grounded"]
-
-                def _score_color(v):
-                    if v is None:
-                        return "#94a3b8", "rgba(148,163,184,0.12)", "#94a3b8"
-                    if v >= 0.8:
-                        return "#059669", "rgba(16,185,129,0.12)", "rgba(16,185,129,0.35)"
-                    if v >= 0.5:
-                        return "#d97706", "rgba(245,158,11,0.12)", "rgba(245,158,11,0.35)"
-                    return "#dc2626", "rgba(239,68,68,0.12)", "rgba(239,68,68,0.35)"
-
-                chips_html = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 4px;">'
-                for _metric, _label in zip(_score_cols, _labels):
-                    _val = _lb[_metric].mean() if _metric in _lb.columns else None
-                    _text, _bg, _border = _score_color(_val)
-                    _display = f"{_val:.2f}" if _val is not None else "—"
-                    chips_html += (
-                        f'<div style="flex:1;min-width:72px;text-align:center;'
-                        f'background:{_bg};border:1px solid {_border};'
-                        f'border-radius:10px;padding:7px 4px 6px;">'
-                        f'<div style="font-size:0.66rem;font-weight:700;color:#64748b;'
-                        f'letter-spacing:0.04em;text-transform:uppercase;margin-bottom:3px;">'
-                        f'{_label}</div>'
-                        f'<div style="font-size:1.25rem;font-weight:800;color:{_text};'
-                        f'line-height:1;">{_display}</div>'
-                        f'</div>'
-                    )
-                chips_html += '</div>'
-                st.markdown(chips_html, unsafe_allow_html=True)
-
-                try:
-                    import sqlite3 as _sqlite3
-                    from observability.trulens_setup import _DB_PATH
-                    _conn = _sqlite3.connect(_DB_PATH)
-                    # Count records that belong to sip-rfc-rag apps (exclude test runs)
-                    _n = _conn.execute(
-                        "SELECT count(*) FROM trulens_records r "
-                        "JOIN trulens_apps a ON r.app_id = a.app_id "
-                        "WHERE a.app_name = 'sip-rfc-rag'"
-                    ).fetchone()[0]
-                    _conn.close()
-                except Exception:
-                    _n = "?"
-                st.caption(f"{_n} queries evaluated · 🟢 ≥0.8 · 🟡 ≥0.5 · 🔴 <0.5")
-            else:
-                st.caption("No evaluations yet — ask a question to start.")
-        except Exception:
-            st.caption("TruLens observability active.")
-
-        if st.button("🖥️ TruLens Dashboard", use_container_width=True, key="trulens_dash"):
-            import subprocess as _sp, sys as _sys
-            _cwd = os.path.dirname(os.path.abspath(__file__))
-            _script = (
-                f"import os; os.chdir(r'{_cwd}'); "
-                "from observability.trulens_setup import get_tru_session; "
-                "get_tru_session().run_dashboard(port=8502, force=True)"
-            )
-            _sp.Popen([_sys.executable, "-c", _script])
-            st.session_state.trulens_dashboard_launched = True
-        if st.session_state.get("trulens_dashboard_launched"):
-            st.success("Dashboard → [http://localhost:8502](http://localhost:8502)")
-
-        # ── Clear chat ────────────────────────────────────────────────────────
+        # ── 5. Clear chat ─────────────────────────────────────────────────────
         st.divider()
         if st.button("🧹 Clear chat history", use_container_width=True):
             st.session_state.messages = []
+            st.rerun()
+
+        # ── 6. RFC Knowledge Base ─────────────────────────────────────────────
+        st.divider()
+        st.markdown('<div class="section-pill sp-rfc">📚 RFC Knowledge Base</div>', unsafe_allow_html=True)
+
+        rfc_chunk_count = vs.rfc_count()
+        st.markdown(f"""
+<div class="stats-row">
+  <span class="stat-chip sc-purple">📄 {rfc_chunk_count:,} RFC chunks</span>
+  <span class="stat-chip sc-green">🏛️ 25 RFCs</span>
+  <span class="stat-chip sc-cyan">🔡 MiniLM-L6</span>
+</div>
+""", unsafe_allow_html=True)
+
+        for cat_name, cat in RFC_CATEGORIES.items():
+            st.markdown(
+                f'<div class="rfc-category-label" style="background:{cat["bg"]};color:{cat["text"]}">'
+                f'{cat_name}</div>',
+                unsafe_allow_html=True,
+            )
+            rows_html = "".join(
+                f'<div class="rfc-row">'
+                f'<span class="rfc-num-badge">{rfc_no}</span>'
+                f'<span>{title}</span>'
+                f'</div>'
+                for rfc_no, title in cat["rfcs"].items()
+            )
+            st.markdown(rows_html, unsafe_allow_html=True)
+
+        if st.button("🔄 Re-index RFCs", use_container_width=True):
+            try:
+                vs.clear_rfcs()
+            except AttributeError:
+                try:
+                    vs._client.delete_collection("sip_rfcs")
+                except Exception:
+                    pass
+            _get_vector_store.clear()
             st.rerun()
 
 
