@@ -1012,15 +1012,38 @@ def _render_sidebar(vs):
             _lb = _tru.get_leaderboard()
             if not _lb.empty:
                 _score_cols = ["Answer Relevance", "Context Relevance", "Groundedness"]
-                _cols = st.columns(3)
-                for _col, _metric in zip(_cols, _score_cols):
+                _labels     = ["Answer", "Context", "Grounded"]
+
+                def _score_color(v):
+                    if v is None:
+                        return "#94a3b8", "rgba(148,163,184,0.12)", "#94a3b8"
+                    if v >= 0.8:
+                        return "#059669", "rgba(16,185,129,0.12)", "rgba(16,185,129,0.35)"
+                    if v >= 0.5:
+                        return "#d97706", "rgba(245,158,11,0.12)", "rgba(245,158,11,0.35)"
+                    return "#dc2626", "rgba(239,68,68,0.12)", "rgba(239,68,68,0.35)"
+
+                chips_html = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 4px;">'
+                for _metric, _label in zip(_score_cols, _labels):
                     _val = _lb[_metric].mean() if _metric in _lb.columns else None
-                    _col.metric(
-                        _metric.split()[0],
-                        f"{_val:.2f}" if _val is not None else "—",
+                    _text, _bg, _border = _score_color(_val)
+                    _display = f"{_val:.2f}" if _val is not None else "—"
+                    chips_html += (
+                        f'<div style="flex:1;min-width:72px;text-align:center;'
+                        f'background:{_bg};border:1px solid {_border};'
+                        f'border-radius:10px;padding:7px 4px 6px;">'
+                        f'<div style="font-size:0.66rem;font-weight:700;color:#64748b;'
+                        f'letter-spacing:0.04em;text-transform:uppercase;margin-bottom:3px;">'
+                        f'{_label}</div>'
+                        f'<div style="font-size:1.25rem;font-weight:800;color:{_text};'
+                        f'line-height:1;">{_display}</div>'
+                        f'</div>'
                     )
+                chips_html += '</div>'
+                st.markdown(chips_html, unsafe_allow_html=True)
+
                 _n = int(_lb["n_records"].sum()) if "n_records" in _lb.columns else "?"
-                st.caption(f"{_n} queries evaluated · RAG Triad")
+                st.caption(f"{_n} queries evaluated · 🟢 ≥0.8 · 🟡 ≥0.5 · 🔴 <0.5")
             else:
                 st.caption("No evaluations yet — ask a question to start.")
         except Exception:
