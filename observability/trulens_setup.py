@@ -17,11 +17,9 @@ from trulens.feedback.generated import re_configured_rating
 from trulens.apps.custom import TruCustomApp
 from trulens.apps.app import instrument
 
-from config import GROQ_API_KEY, OLLAMA_BASE_URL, OLLAMA_MODEL
+from config import GROQ_API_KEY, GROQ_EVAL_MODEL, OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_URL, OLLAMA_CLOUD_MODEL
 
 logger = logging.getLogger(__name__)
-
-EVAL_MODEL_GROQ = "llama-3.1-8b-instant"
 
 # Tools whose result_preview counts as retrieved context for RAG Triad evaluation
 CONTEXT_TOOLS = {
@@ -43,13 +41,15 @@ def _is_rate_limit(exc: Exception) -> bool:
 
 class GroqOllamaProvider(LLMProvider):
     """
-    TruLens LLMProvider backed by Groq with Ollama fallback on HTTP 429.
+    TruLens LLMProvider backed by Gemini (primary, fast cloud)
+    with local Ollama gemma4:e4b as fallback.  Groq is never used for eval
+    so it remains available for the main agent.
 
     Bypasses the endpoint requirement by overriding generate_score /
     generate_score_and_reasons to call _create_chat_completion directly.
     """
 
-    model_engine: str = EVAL_MODEL_GROQ
+    model_engine: str = GROQ_EVAL_MODEL
 
     def _create_chat_completion(
         self,
@@ -61,30 +61,62 @@ class GroqOllamaProvider(LLMProvider):
         if messages is None:
             messages = [{"role": "user", "content": prompt}]
 
-        def _call(client: OpenAIClient, model: str) -> str:
+        import json as _json
+
+        score_tool = {
+            "type": "function",
+            "function": {
+                "name": "submit_score",
+                "description": "Submit your integer evaluation score",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"score": {"type": "integer"}},
+                    "required": ["score"],
+                },
+            },
+        }
+
+        def _call_with_tools(client: OpenAIClient, model: str) -> str:
             resp = client.chat.completions.create(
                 model=model,
                 messages=list(messages),
                 temperature=0.0,
-                max_tokens=512,
+                tools=[score_tool],
+                tool_choice={"type": "function", "function": {"name": "submit_score"}},
             )
-            return resp.choices[0].message.content or ""
+            tool_calls = resp.choices[0].message.tool_calls
+            if tool_calls:
+                args = _json.loads(tool_calls[0].function.arguments)
+                return str(args["score"])
+            raise ValueError(f"{model} did not invoke submit_score tool")
 
+        # Primary: Groq ────────────────────────────────────────────────────────
         groq_client = OpenAIClient(
             api_key=GROQ_API_KEY,
             base_url="https://api.groq.com/openai/v1",
         )
         try:
-            return _call(groq_client, EVAL_MODEL_GROQ)
+            return _call_with_tools(groq_client, GROQ_EVAL_MODEL)
         except Exception as exc:
-            if _is_rate_limit(exc):
-                logger.warning("Groq 429 in TruLens eval → Ollama fallback")
-                ollama_client = OpenAIClient(
-                    api_key="ollama",
-                    base_url=f"{OLLAMA_BASE_URL}/v1",
-                )
-                return _call(ollama_client, OLLAMA_MODEL)
-            raise
+            # Fallback: Ollama Cloud ────────────────────────────────────────────
+            logger.warning("Groq eval failed (%s) — falling back to Ollama Cloud", exc)
+            ollama_cloud_client = OpenAIClient(
+                api_key=OLLAMA_CLOUD_API_KEY,
+                base_url=f"{OLLAMA_CLOUD_URL}/v1",
+            )
+            try:
+                return _call_with_tools(ollama_cloud_client, OLLAMA_CLOUD_MODEL)
+            except Exception as exc2:
+                logger.warning("Ollama Cloud eval failed (%s) — returning default score", exc2)
+                return "_DEFAULT_"
+
+    def _parse_score(self, response: str, min_score_val: int, max_score_val: int) -> float:
+        if response == "_DEFAULT_":
+            return 0.5
+        score = re_configured_rating(
+            response, min_score_val=min_score_val, max_score_val=max_score_val
+        )
+        return (score - min_score_val) / (max_score_val - min_score_val)
 
     def generate_score(
         self,
@@ -94,15 +126,11 @@ class GroqOllamaProvider(LLMProvider):
         max_score_val: int = 10,
         temperature: float = 0.0,
     ) -> float:
-        """Call LLM directly — bypasses endpoint requirement."""
         messages = [{"role": "system", "content": system_prompt}]
         if user_prompt:
             messages.append({"role": "user", "content": user_prompt})
         response = self._create_chat_completion(messages=messages)
-        score = re_configured_rating(
-            response, min_score_val=min_score_val, max_score_val=max_score_val
-        )
-        return (score - min_score_val) / (max_score_val - min_score_val)
+        return self._parse_score(response, min_score_val, max_score_val)
 
     def generate_score_and_reasons(
         self,
@@ -112,15 +140,11 @@ class GroqOllamaProvider(LLMProvider):
         max_score_val: int = 10,
         temperature: float = 0.0,
     ) -> Tuple[float, Dict]:
-        """Call LLM directly — bypasses endpoint requirement."""
         messages = [{"role": "system", "content": system_prompt}]
         if user_prompt:
             messages.append({"role": "user", "content": user_prompt})
         response = self._create_chat_completion(messages=messages)
-        score = re_configured_rating(
-            response, min_score_val=min_score_val, max_score_val=max_score_val
-        )
-        normalized = (score - min_score_val) / (max_score_val - min_score_val)
+        normalized = self._parse_score(response, min_score_val, max_score_val)
         return normalized, {"reason": response}
 
     def groundedness_measure_with_cot_reasons(
@@ -134,45 +158,30 @@ class GroqOllamaProvider(LLMProvider):
         max_score_val: int = 3,
         temperature: float = 0.0,
     ) -> Tuple[float, Dict]:
-        """Override to bypass endpoint assertion — uses sent_tokenize + generate_score_and_reasons."""
-        import nltk
-        from nltk.tokenize import sent_tokenize
-        from trulens.feedback import prompts as _prompts
-        from trulens.feedback.v2 import feedback as _fv2
-
-        nltk.download("punkt_tab", quiet=True)
-
-        # Normalise source: join list of context chunks into a single string
+        """Single-call groundedness — scores the whole answer at once to minimise API calls."""
         if isinstance(source, list):
-            source_str = "\n\n".join(str(s) for s in source if s)
+            source_str = "\n\n".join(str(s) for s in source if s and str(s).strip())
         else:
             source_str = str(source)
 
         if not source_str.strip():
             return 0.0, {"reason": "No context retrieved — cannot evaluate groundedness"}
 
-        hypotheses = sent_tokenize(statement)
-        # Filter trivial sentences (fewer than 5 words) without calling endpoint
-        hypotheses = [h for h in hypotheses if len(h.split()) >= 5]
-        if not hypotheses:
-            return 0.0, {"reason": "No non-trivial statements to evaluate"}
+        if not statement or not statement.strip():
+            return 0.0, {"reason": "Empty answer — cannot evaluate groundedness"}
 
-        # Use a simple single-score prompt per hypothesis to avoid
-        # re_configured_rating failing on multi-score CoT blocks.
         system_prompt = (
-            "You are evaluating whether a statement is supported by the provided source. "
+            f"You are evaluating whether an answer is supported by the provided source context. "
             f"Respond with a SINGLE integer between {min_score_val} and {max_score_val} "
             f"where {min_score_val} = not supported at all and {max_score_val} = fully supported. "
             "Output only the integer, nothing else."
         )
-
-        scores: Dict[str, float] = {}
-        for i, hypothesis in enumerate(hypotheses):
-            user_prompt = (
-                f"SOURCE:\n{source_str}\n\n"
-                f"STATEMENT: {hypothesis}\n\n"
-                f"Score (single integer {min_score_val}–{max_score_val}):"
-            )
+        user_prompt = (
+            f"SOURCE:\n{source_str[:3000]}\n\n"
+            f"ANSWER: {statement[:1000]}\n\n"
+            f"Score (single integer {min_score_val}–{max_score_val}):"
+        )
+        try:
             score = self.generate_score(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -180,10 +189,10 @@ class GroqOllamaProvider(LLMProvider):
                 max_score_val=max_score_val,
                 temperature=temperature,
             )
-            scores[f"s{i}"] = score
-
-        avg = sum(scores.values()) / len(scores)
-        return avg, {"reason": f"Avg groundedness over {len(scores)} sentence(s): {avg:.2f}"}
+            return score, {"reason": f"Groundedness score: {score:.2f}"}
+        except Exception as exc:
+            logger.warning("Groundedness scoring failed: %s", exc)
+            return 0.5, {"reason": f"Scoring failed: {exc}"}
 
 
 class SIPAssistantApp:

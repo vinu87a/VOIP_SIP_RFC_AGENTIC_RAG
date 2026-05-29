@@ -3,12 +3,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Groq — primary for agent and eval
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_MODEL   = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_EVAL_MODEL = "llama-3.1-8b-instant"
 
-# Ollama fallback — used when Groq returns HTTP 429 (rate limit)
-OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL",    "gemma4:e4b")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+# Ollama Cloud — secondary for agent and eval
+OLLAMA_CLOUD_API_KEY = os.getenv("OLLAMA_CLOUD_API_KEY", "")
+OLLAMA_CLOUD_URL     = "https://ollama.com"
+OLLAMA_CLOUD_MODEL   = os.getenv("OLLAMA_CLOUD_MODEL", "gpt-oss:120b")
 
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 

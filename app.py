@@ -7,6 +7,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from config import GROQ_MODEL, OLLAMA_CLOUD_MODEL
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 
 st.set_page_config(
@@ -1118,12 +1120,13 @@ def _render_assistant_message(msg: dict):
 
     elapsed = msg.get("elapsed_seconds")
     if elapsed is not None:
-        is_ollama = msg.get("groq_rate_limited")
-        backend = f"Ollama · {msg.get('ollama_model', 'gemma4:e4b')}" if is_ollama else "Groq"
-        icon = "🦙" if is_ollama else "⚡"
-        cls = "timing-pill ollama" if is_ollama else "timing-pill"
+        backend_used = msg.get("backend_used", "groq" if not msg.get("groq_rate_limited") else "ollama")
+        if backend_used == "groq":
+            icon, label, cls = "⚡", f"Groq · {GROQ_MODEL.split('/')[-1]}", "timing-pill"
+        else:
+            icon, label, cls = "☁️", f"Ollama Cloud · {OLLAMA_CLOUD_MODEL}", "timing-pill ollama"
         st.markdown(
-            f'<div class="{cls}">{icon} {elapsed}s &nbsp;·&nbsp; {backend}</div>',
+            f'<div class="{cls}">{icon} {elapsed}s &nbsp;·&nbsp; {label}</div>',
             unsafe_allow_html=True,
         )
 
@@ -1245,26 +1248,47 @@ def main():
                         import json as _json
                         from observability.trulens_setup import CONTEXT_TOOLS
 
-                        def _context_text(preview: str) -> str:
-                            """Extract readable RFC text from tool result JSON."""
+                        def _context_text(raw: str) -> str:
+                            """Extract readable text from a tool result JSON string."""
                             try:
-                                data = _json.loads(preview)
+                                data = _json.loads(raw)
+                                # search_rfc
                                 if "results" in data:
                                     return "\n\n".join(
                                         f"{r.get('source','')}: {r.get('content','')}"
                                         for r in data["results"] if r.get("content")
                                     )
+                                # search_trace
+                                if "trace_results" in data:
+                                    return "\n\n".join(
+                                        r.get("message", "")
+                                        for r in data["trace_results"] if r.get("message")
+                                    )
+                                # diagnose_sip_error
+                                if "rfc_definitions" in data:
+                                    return "\n\n".join(
+                                        f"{r.get('source','')}: {r.get('content','')}"
+                                        for r in data["rfc_definitions"] if r.get("content")
+                                    )
+                                # cross_reference
+                                if "governing_rules" in data:
+                                    return "\n\n".join(
+                                        f"{r.get('source','')}: {r.get('rule','')}"
+                                        for r in data["governing_rules"] if r.get("rule")
+                                    )
+                                # search_docs
                                 if "definition" in data:
                                     return str(data["definition"])
                             except Exception:
                                 pass
-                            return preview
+                            return raw
 
                         _sip_app, _tru_recorder, _ = _get_trulens_components()
                         _contexts = [
-                            _context_text(s["result_preview"])
+                            _context_text(s.get("result_content") or s["result_preview"])
                             for s in result.get("reasoning_trace", [])
-                            if s.get("tool") in CONTEXT_TOOLS and s.get("result_preview")
+                            if s.get("tool") in CONTEXT_TOOLS
+                            and (s.get("result_content") or s.get("result_preview"))
                         ]
                         _contexts = [c for c in _contexts if c.strip()]
                         with _tru_recorder:

@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 from langchain_core.messages import (
@@ -14,7 +15,10 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, Field
 
-from config import GROQ_API_KEY, GROQ_MODEL, OLLAMA_MODEL, OLLAMA_BASE_URL
+from config import (
+    GROQ_API_KEY, GROQ_MODEL,
+    OLLAMA_CLOUD_API_KEY, OLLAMA_CLOUD_URL, OLLAMA_CLOUD_MODEL,
+)
 from agent.prompts import SYSTEM_PROMPT
 from agent.tools import execute_tool
 
@@ -28,8 +32,8 @@ MAX_ITERATIONS = 14
 class AgentState(TypedDict):
     # add_messages merges / deduplicates instead of blindly appending
     messages: Annotated[List[BaseMessage], add_messages]
-    # Set to True by agent_node when Groq 429 triggers Ollama fallback
     groq_rate_limited: bool
+    backend_used: str  # "gemini" | "groq" | "ollama"
 
 
 # ── Pydantic input schemas (required by StructuredTool / ToolNode) ────────────
@@ -186,75 +190,60 @@ def _make_lc_tools(vector_store) -> List[StructuredTool]:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _is_rate_limit(exc: Exception) -> bool:
-    """Return True when Groq raises an HTTP 429 rate-limit error."""
     msg = str(exc).lower()
-    return "429" in msg or "rate_limit" in msg or "rate limit" in msg or "ratelimit" in msg
+    return "429" in msg or "rate_limit" in msg or "rate limit" in msg or "ratelimit" in msg or "resource_exhausted" in msg
 
 
 # ── Graph factory ─────────────────────────────────────────────────────────────
 
+_RETRY_DELAYS = [5, 10, 20, 30, 60]   # seconds between Gemini 429 retries
+
+
 def _build_graph(vector_store):
     """
     Compile a LangGraph StateGraph using the prebuilt ToolNode.
-
-    Primary LLM : Groq (fast cloud inference)
-    Fallback LLM: Ollama gemma4:e4b — activated automatically on Groq HTTP 429
-
-    Nodes
-    -----
-    agent — ChatGroq (+ Ollama fallback) with all 5 tools bound via bind_tools()
-    tools — langgraph.prebuilt.ToolNode
-
-    Edges
-    -----
-    START → agent
-    agent → tools  (tools_condition: AIMessage has tool_calls)
-    agent → END    (tools_condition: no tool_calls / stop)
-    tools → agent  (always — loop back for next reasoning step)
+    Only Gemini is used — on 429 the node retries with backoff until it succeeds.
     """
     lc_tools  = _make_lc_tools(vector_store)
     tool_node = ToolNode(lc_tools)
 
     # ── Primary: Groq ─────────────────────────────────────────────────────────
     groq_with_tools = ChatGroq(
-        model=GROQ_MODEL,
-        api_key=GROQ_API_KEY,
-        temperature=0.1,
-        max_tokens=4096,
+        model=GROQ_MODEL, api_key=GROQ_API_KEY, temperature=0.1, max_tokens=4096,
     ).bind_tools(lc_tools)
 
-    # On turn 0, force at least one tool call so the agent always retrieves
-    # RFC/trace context before answering — prevents the LLM from answering
-    # entirely from training data without grounding in the knowledge base.
     groq_with_tools_required = ChatGroq(
-        model=GROQ_MODEL,
-        api_key=GROQ_API_KEY,
-        temperature=0.1,
-        max_tokens=4096,
+        model=GROQ_MODEL, api_key=GROQ_API_KEY, temperature=0.1, max_tokens=4096,
     ).bind_tools(lc_tools, tool_choice="required")
 
     groq_plain = ChatGroq(
-        model=GROQ_MODEL,
-        api_key=GROQ_API_KEY,
-        temperature=0.1,
-        max_tokens=4096,
+        model=GROQ_MODEL, api_key=GROQ_API_KEY, temperature=0.1, max_tokens=4096,
     )
 
-    # ── Fallback: Ollama ──────────────────────────────────────────────────────
-    # num_predict matches Groq's max_tokens so responses are never truncated.
-    ollama_with_tools = ChatOllama(
-        model=OLLAMA_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.1,
-        num_predict=4096,
+    # ── Fallback: Ollama Cloud ────────────────────────────────────────────────
+    _cloud_kwargs = {"headers": {"Authorization": f"Bearer {OLLAMA_CLOUD_API_KEY}"}}
+
+    ollama_cloud_with_tools = ChatOllama(
+        model=OLLAMA_CLOUD_MODEL, base_url=OLLAMA_CLOUD_URL,
+        temperature=0.1, num_predict=4096, client_kwargs=_cloud_kwargs,
     ).bind_tools(lc_tools)
 
-    ollama_plain = ChatOllama(
-        model=OLLAMA_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.1,
-        num_predict=4096,
+    ollama_cloud_plain = ChatOllama(
+        model=OLLAMA_CLOUD_MODEL, base_url=OLLAMA_CLOUD_URL,
+        temperature=0.1, num_predict=4096, client_kwargs=_cloud_kwargs,
     )
+
+    def _invoke_with_retry(llm, messages, label: str) -> AIMessage:
+        for attempt, delay in enumerate(_RETRY_DELAYS):
+            try:
+                return llm.invoke(messages)
+            except Exception as exc:
+                if _is_rate_limit(exc):
+                    logger.warning("%s 429 — retrying in %ds (attempt %d/%d)", label, delay, attempt + 1, len(_RETRY_DELAYS))
+                    time.sleep(delay)
+                else:
+                    raise
+        return llm.invoke(messages)
 
     def agent_node(state: AgentState) -> Dict:
         agent_turns = sum(1 for m in state["messages"] if isinstance(m, AIMessage))
@@ -264,79 +253,64 @@ def _build_graph(vector_store):
         if is_final:
             logger.warning("MAX_ITERATIONS reached — forcing final answer without tools")
             invoke_msgs = state["messages"] + [HumanMessage(
-                content=(
-                    "Based on all the information retrieved above, "
-                    "provide your final, complete answer now."
-                )
+                content="Based on all the information retrieved above, provide your final, complete answer now."
             )]
 
         if is_final:
-            primary  = groq_plain
-            fallback = ollama_plain
+            primary_llm  = groq_plain
+            fallback_llm = ollama_cloud_plain
         elif agent_turns == 0:
-            # First turn: require at least one tool call for RFC grounding
-            primary  = groq_with_tools_required
-            fallback = ollama_with_tools   # Ollama doesn't support tool_choice="required"
+            primary_llm  = groq_with_tools_required
+            fallback_llm = ollama_cloud_with_tools
         else:
-            primary  = groq_with_tools
-            fallback = ollama_with_tools
+            primary_llm  = groq_with_tools
+            fallback_llm = ollama_cloud_with_tools
 
-        # 1. Try Groq ──────────────────────────────────────────────────────────
+        # 1. Groq ──────────────────────────────────────────────────────────────
         try:
-            response = primary.invoke(invoke_msgs)
-            return {"messages": [response]}
-
+            response = _invoke_with_retry(primary_llm, invoke_msgs, "Groq")
+            backend_used = "groq"
         except Exception as exc:
-            # 2a. Groq rate-limited → try Ollama ───────────────────────────────
-            if _is_rate_limit(exc):
-                logger.warning(
-                    "Groq 429 rate limit — falling back to Ollama %s", OLLAMA_MODEL
-                )
-                try:
-                    response = fallback.invoke(invoke_msgs)
-                    return {"messages": [response], "groq_rate_limited": True}
-                except Exception as exc2:
-                    logger.error("Ollama fallback failed: %s", exc2)
-                    return {
-                        "messages": [AIMessage(content=f"Agent error: {exc2}")],
-                        "groq_rate_limited": True,
-                    }
-
-            # 2b. Other Groq error — on turn 0, retry WITH tools so RFC grounding
-            # is preserved; on later turns, retry without tools for a plain answer.
-            retry_llm = groq_with_tools if agent_turns == 0 else groq_plain
-            logger.error(
-                "LLM call failed (%s) — retrying Groq (%s)",
-                exc,
-                "with_tools" if agent_turns == 0 else "plain",
-            )
+            logger.warning("Groq failed (%s) — falling back to Ollama Cloud", exc)
+            # 2. Ollama Cloud ──────────────────────────────────────────────────
             try:
-                response = retry_llm.invoke(invoke_msgs)
-                return {"messages": [response]}
+                response = _invoke_with_retry(fallback_llm, invoke_msgs, "Ollama Cloud")
+                backend_used = "ollama"
             except Exception as exc2:
-                # Plain Groq also 429 → fall back to Ollama plain
-                if _is_rate_limit(exc2):
-                    logger.warning(
-                        "Groq 429 on plain retry — falling back to Ollama %s", OLLAMA_MODEL
-                    )
-                    try:
-                        response = ollama_plain.invoke(invoke_msgs)
-                        return {"messages": [response], "groq_rate_limited": True}
-                    except Exception as exc3:
-                        return {
-                            "messages": [AIMessage(content=f"Agent error: {exc3}")],
-                            "groq_rate_limited": True,
-                        }
-                logger.error("Plain Groq fallback also failed: %s", exc2)
-                return {"messages": [AIMessage(content=f"Agent error: {exc2}")]}
+                logger.error("All backends failed: %s", exc2)
+                return {
+                    "messages": [AIMessage(content=f"Agent error: {exc2}")],
+                    "groq_rate_limited": False,
+                    "backend_used": "ollama",
+                }
+
+        # Enforce at least one tool call on turn 0
+        if agent_turns == 0 and not is_final and not getattr(response, "tool_calls", None):
+            logger.warning("Turn-0 returned no tool_calls — synthesizing mandatory search_rfc call")
+            import uuid as _uuid
+            _query_text = next(
+                (m.content for m in reversed(list(invoke_msgs)) if isinstance(m, HumanMessage)),
+                "SIP protocol",
+            )
+            response = AIMessage(
+                content="",
+                tool_calls=[{
+                    "id":   _uuid.uuid4().hex,
+                    "name": "search_rfc",
+                    "args": {"query": _query_text},
+                    "type": "tool_call",
+                }],
+            )
+
+        return {"messages": [response], "groq_rate_limited": False, "backend_used": backend_used}
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent_node)
-    graph.add_node("tools", tool_node)         # ← langgraph.prebuilt.ToolNode
+    graph.add_node("tools", tool_node)
 
     graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", tools_condition)   # → "tools" or END
-    graph.add_edge("tools", "agent")           # always loop back
+    graph.add_conditional_edges("agent", tools_condition)
+    graph.add_edge("tools", "agent")
 
     return graph.compile()
 
@@ -487,6 +461,7 @@ class AgentOrchestrator:
                     HumanMessage(content=query),
                 ],
                 "groq_rate_limited": False,
+                "backend_used": "gemini",
             },
             config={"recursion_limit": MAX_ITERATIONS * 2 + 5},
         )
@@ -515,6 +490,7 @@ class AgentOrchestrator:
                 "tool":           tool_name,
                 "args":           tool_args,
                 "result_preview": (msg.content or "")[:500],
+                "result_content": msg.content or "",
             })
 
             if tool_name == "reconstruct_call_flow":
@@ -527,19 +503,25 @@ class AgentOrchestrator:
 
         last_msg = messages[-1]
         raw_answer = last_msg.content if hasattr(last_msg, "content") else ""
-        answer     = _sanitize_answer(raw_answer)
+        if isinstance(raw_answer, list):
+            raw_answer = " ".join(
+                p.get("text", "") if isinstance(p, dict) else str(p)
+                for p in raw_answer
+            )
+        answer = _sanitize_answer(raw_answer)
 
         # Fall back to the pre-computed call flow if the agent skipped the tool
         if call_flow_result is None and precomputed_cf is not None:
             call_flow_result = precomputed_cf
 
         rate_limited = final_state.get("groq_rate_limited", False)
+        backend_used = final_state.get("backend_used", "gemini")
         return {
-            "answer":            answer,
-            "reasoning_trace":   reasoning_trace,
-            "call_flow":         call_flow_result,
+            "answer":          answer,
+            "reasoning_trace": reasoning_trace,
+            "call_flow":       call_flow_result,
             "groq_rate_limited": rate_limited,
-            "ollama_model":      OLLAMA_MODEL if rate_limited else "",
+            "backend_used":    backend_used,
         }
 
     # ── Graph visualisation ───────────────────────────────────────────────────

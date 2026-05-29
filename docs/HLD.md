@@ -1,9 +1,9 @@
 # High Level Design (HLD)
 # SIP / RTP Agentic RAG Protocol Assistant
 
-**Version:** 1.1  
-**Date:** 2026-05-29  
-**Stack:** Python 3.11 · LangGraph · Groq (Llama 4 Scout) · Ollama (Gemma 4) · ChromaDB · Sentence-Transformers · Streamlit · TruLens 1.5.3
+**Version:** 1.2  
+**Date:** 2026-05-30  
+**Stack:** Python 3.11 · LangGraph · Groq (Llama 4 Scout) · Ollama Cloud (gpt-oss:120b) · ChromaDB · Sentence-Transformers · Streamlit · TruLens 1.5.3
 
 ---
 
@@ -27,9 +27,9 @@
 
 ## 1. Executive Summary
 
-The **SIP / RTP Agentic RAG Protocol Assistant** is a locally-runnable, domain-specific AI chatbot that provides deep technical analysis of Session Initiation Protocol (SIP) signaling, RTP media streams, SRTP security, and SDP negotiation. It grounds every answer in authoritative RFC specifications and — when a capture file is uploaded — in the user's own SIP trace.
+The **SIP / RTP Agentic RAG Protocol Assistant** is a domain-specific AI chatbot that provides deep technical analysis of Session Initiation Protocol (SIP) signaling, RTP media streams, SRTP security, and SDP negotiation. It grounds every answer in authoritative RFC specifications and — when a capture file is uploaded — in the user's own SIP trace.
 
-The system is built on the **Retrieval-Augmented Generation (RAG)** pattern extended with an **agentic loop**: the language model is not just given retrieved chunks, it is equipped with tools it can call autonomously to search the RFC knowledge base, inspect uploaded trace files, reconstruct call flows, diagnose error codes, and cross-reference observations against specifications. The agent can chain multiple tool calls before writing its final answer.
+The system is built on the **Retrieval-Augmented Generation (RAG)** pattern extended with an **agentic loop**: the language model is equipped with tools it can call autonomously to search the RFC knowledge base, inspect uploaded trace files, reconstruct call flows, diagnose error codes, and cross-reference observations against specifications.
 
 ---
 
@@ -42,7 +42,7 @@ The system is built on the **Retrieval-Augmented Generation (RAG)** pattern exte
 | **RFC-grounded answers** | Every factual claim backed by retrieved RFC text — no hallucination of standards |
 | **Trace-level analysis** | Accept .pcap, .txt, .html trace files and answer questions about actual captured traffic |
 | **Agentic reasoning** | LLM decides which tools to call and in what order, not a fixed retrieval pipeline |
-| **Local-first** | Embeddings, ChromaDB, and Ollama fallback run entirely on local machine |
+| **Resilient LLM routing** | Groq primary with Ollama Cloud fallback and automatic retry backoff |
 | **Document library** | Users can ingest their own PDFs, DOCX, URLs, or text files alongside the RFC knowledge base |
 
 ### Out of Scope
@@ -63,10 +63,11 @@ The system is built on the **Retrieval-Augmented Generation (RAG)** pattern exte
 │  ┌───────────────────────────────┐   ┌───────────────────────────────────┐  │
 │  │        SIDEBAR                │   │         MAIN CHAT AREA            │  │
 │  │  • Brand / navigation         │   │  • Chat history (user + agent)    │  │
-│  │  • SIP Trace uploader         │   │  • Welcome hero screen            │  │
-│  │  • RFC Knowledge Base list    │   │  • Agent reasoning expander       │  │
+│  │  • Observability scores       │   │  • Welcome hero screen            │  │
+│  │  • SIP Trace uploader         │   │  • Agent reasoning expander       │  │
 │  │  • Document Library           │   │  • Call-flow diagram expander     │  │
-│  │  • Re-index / Clear buttons   │   │  • Timing + backend badge         │  │
+│  │  • RFC Knowledge Base list    │   │  • Backend badge (⚡/☁️ + timing) │  │
+│  │  • Re-index / Clear buttons   │   │                                   │  │
 │  └───────────────────────────────┘   └───────────────────────────────────┘  │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │  query + context flags
@@ -83,7 +84,7 @@ The system is built on the **Retrieval-Augmented Generation (RAG)** pattern exte
 │   │                  ▲                  │ no                             │  │
 │   │                  └──────────────────┘ ──► END                       │  │
 │   │                                                                      │  │
-│   │   agent node: ChatGroq / ChatOllama (bind_tools)                    │  │
+│   │   agent node: ChatGroq (primary) / ChatOllama Cloud (fallback)      │  │
 │   │   tool node:  LangGraph ToolNode (StructuredTool wrappers)          │  │
 │   └──────────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────┬──────────────────────────────────────┘
@@ -109,14 +110,6 @@ The system is built on the **Retrieval-Augmented Generation (RAG)** pattern exte
 │  • sip_trace (ephemeral│
 │  • user_docs (persist) │
 └────────────────────────┘
-             │
-             ▼
-┌────────────────────────┐
-│  ChromaDB on Disk      │
-│  chroma_db/            │
-│  (cosine similarity,   │
-│  all-MiniLM-L6-v2)     │
-└────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    OBSERVABILITY LAYER (observability/)                      │
@@ -140,26 +133,20 @@ The system is built on the **Retrieval-Augmented Generation (RAG)** pattern exte
 
 ### 4.1 Streamlit Frontend (`app.py`)
 
-The single-page application entry point. Manages:
-- **Session state** — chat history, trace status, doc processing flags
-- **Sidebar rendering** — trace upload, RFC list, document library
-- **Chat loop** — reads user input, calls the agent, renders responses
-- **CSS injection** — full custom light-theme design system
+Single-page application entry point. Manages session state, sidebar rendering, the chat loop, and CSS injection. Each response shows a **backend badge** (e.g., `⚡ Groq · llama-4-scout-17b-16e-instruct` or `☁️ Ollama Cloud · gpt-oss:120b`) and elapsed time, derived from the `backend_used` field in the agent state.
 
 ### 4.2 Agent Orchestrator (`agent/orchestrator.py`)
 
-The brain of the system. Builds and runs a **LangGraph StateGraph** with two nodes:
+Builds and runs a **LangGraph StateGraph** with two nodes:
 
-- **`agent` node** — invokes the LLM (Groq primary, Ollama fallback). The LLM reads the conversation history and either produces a final text answer or emits tool calls.
-- **`tools` node** — executes all pending tool calls, appends `ToolMessage` results back to state.
+- **`agent` node** — invokes the LLM. Primary: Groq. Fallback: Ollama Cloud with exponential backoff (5→10→20→30→60s) on rate-limit or error.
+- **`tools` node** — executes all pending tool calls, appends `ToolMessage` results.
 
-The graph loops until the model produces no tool calls, then extracts the final answer.
+State schema includes `backend_used: str` (`"groq"` | `"ollama"`) so `app.py` can display the correct badge.
 
 ### 4.3 Tool Layer (`agent/tools.py`)
 
-Six tools the LLM can invoke. Each tool is defined twice:
-1. As a **JSON schema** (`TOOL_DEFINITIONS`) for the Groq API format
-2. As a **`StructuredTool`** in `orchestrator.py` for LangGraph's `ToolNode`
+Six tools the LLM can invoke:
 
 | Tool | Purpose |
 |------|---------|
@@ -172,28 +159,13 @@ Six tools the LLM can invoke. Each tool is defined twice:
 
 ### 4.4 Prompt System (`agent/prompts.py`)
 
-A single large `SYSTEM_PROMPT` string injected as the first `SystemMessage`. It defines:
-- The agent's persona and knowledge scope (25 RFCs listed)
-- Tool descriptions and when to use each
-- A **Trace Diagnosis Playbook** with step-by-step procedures for 488, 401/407, 503, 486/480
-- **Response Formatting rules** (headings, bold, underline, citations, follow-up questions)
-- **Output hygiene rules** (banned phrases, tool name suppression)
-
-At runtime, `orchestrator.py` appends a dynamic `## Trace Status` and `## User Documents` section to the system prompt based on current session state.
+A single large `SYSTEM_PROMPT` string injected as the first `SystemMessage`. Defines the agent's persona, tool usage policy, trace diagnosis playbooks, response formatting rules, and output hygiene constraints (tool name suppression, banned phrases).
 
 ### 4.5 Vector Store (`store/vector_store.py`)
 
-Thin wrapper around three **ChromaDB** collections using cosine-similarity with `all-MiniLM-L6-v2` embeddings. RFC search additionally maintains an in-memory **BM25Okapi** index (built from the same corpus) and fuses both retrieval signals using **Reciprocal Rank Fusion (RRF)**:
-
-| Collection | Persistence | Purpose |
-|-----------|-------------|---------|
-| `sip_rfcs` | Permanent | RFC text, IANA registry, Wikipedia SIP codes, SIP/VoIP glossary |
-| `sip_trace` | Ephemeral (cleared on init) | Currently-uploaded SIP trace messages |
-| `user_docs` | Permanent | User-uploaded documents (PDF, DOCX, HTML, TXT, URL) |
+Thin wrapper around three **ChromaDB** collections using cosine-similarity with `all-MiniLM-L6-v2` embeddings. RFC search additionally maintains an in-memory **BM25Okapi** index and fuses both retrieval signals using **Reciprocal Rank Fusion (RRF)**.
 
 ### 4.6 Ingest Pipeline (`ingest/`)
-
-Responsible for populating the vector store. Five sub-modules:
 
 | Module | Role |
 |--------|------|
@@ -211,30 +183,27 @@ Responsible for populating the vector store. Five sub-modules:
 | `html_parser.py` | `.html`, `.htm` | List of parsed SIP message dicts |
 | `pcap_parser.py` | `.pcap`, `.pcapng` | SIP message dicts + RTP stream summaries |
 
-### 4.9 Observability Layer (`observability/trulens_setup.py`)
-
-Provides RAG quality evaluation using [TruLens](https://www.trulens.org/) 1.5.3. Runs entirely post-hoc — it never blocks the agent response.
-
-**Key design choices:**
-- `SIPAssistantApp` is a **pure recording shell** — it does not run the agent. `app.py` runs `AgentOrchestrator` as before, then hands the pre-computed `(question, answer, contexts)` to TruLens for recording.
-- `GroqOllamaProvider` extends TruLens's `LLMProvider` directly (bypassing `trulens-providers-openai`) and overrides `generate_score`, `generate_score_and_reasons`, and `groundedness_measure_with_cot_reasons` to call `_create_chat_completion` directly, avoiding the `endpoint` requirement.
-- `FeedbackMode.DEFERRED` — feedback rows are written to SQLite as pending, then processed by a `start_evaluator()` background thread. This eliminates any threading conflict with Streamlit.
-- RFC context chunks are extracted from the agent's `reasoning_trace` JSON and cleaned to plain text before being passed to TruLens.
-
 ### 4.8 Configuration (`config.py`)
-
-Central configuration file. Key settings:
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
-| `GROQ_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | Primary LLM |
-| `OLLAMA_MODEL` | `gemma4:e4b` | Fallback LLM |
+| `GROQ_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | Primary agent LLM |
+| `GROQ_EVAL_MODEL` | `llama-3.1-8b-instant` | Primary eval scoring LLM |
+| `OLLAMA_CLOUD_MODEL` | `gpt-oss:120b` | Fallback for agent and eval |
+| `OLLAMA_CLOUD_URL` | `https://ollama.com` | Ollama Cloud endpoint |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Local embedding model |
 | `CHUNK_SIZE` | 2000 chars | RFC chunk size |
-| `CHUNK_OVERLAP` | 300 chars | RFC chunk overlap |
 | `TOP_K` | 6 | Default search results per query |
-| `CHROMA_PERSIST_DIR` | `./chroma_db/` | ChromaDB on-disk storage |
-| `RFC_CACHE_DIR` | `./rfc_cache/` | Downloaded RFC text cache |
+
+### 4.9 Observability Layer (`observability/trulens_setup.py`)
+
+RAG quality evaluation using TruLens 1.5.3. Runs entirely post-hoc.
+
+**Key design choices:**
+- `SIPAssistantApp` is a **pure recording shell** — does not run the agent.
+- `GroqOllamaProvider` uses a **tool-calling approach** for eval scoring: defines a `submit_score` tool with `"type": "integer"` in its JSON schema and forces `tool_choice` to guarantee the model returns an integer. This eliminates regex parsing failures on empty or prose responses.
+- **Groundedness** is evaluated in a **single API call** (whole answer vs. context), not per-sentence. This reduces eval calls from ~17 to ~8 per query.
+- `FeedbackMode.DEFERRED` — feedback rows written to SQLite as pending, processed by a `start_evaluator()` background thread.
 
 ---
 
@@ -247,9 +216,7 @@ Central configuration file. Key settings:
   rfc-editor.org                   rfc_cache/           ChromaDB
   ──────────────                   ──────────           ────────
   RFC 3261 .txt ──► fetch_rfc() ──► rfc3261.txt ──►  chunk_rfc()
-  RFC 3550 .txt ──► fetch_rfc() ──► rfc3550.txt ──►  chunk_rfc()
-  ... (25 RFCs) ──► fetch_rfc() ──► rfc????.txt ──►  chunk_rfc()
-                                                           │
+  ... (25 RFCs)                                            │
   iana.org ────────────────────────► fetch_iana_sip_chunks()
   wikipedia.org ───────────────────► fetch_wikipedia_sip_chunks()
   static CSV ──────────────────────► fetch_sip_glossary_chunks()
@@ -263,18 +230,6 @@ Central configuration file. Key settings:
                                     │  sip_rfcs   │  ← ~1,800 chunks
                                     │  collection │    cosine similarity
                                     └─────────────┘    MiniLM-L6-v2
-                              
-  Chunk schema (sip_rfcs):
-  ┌──────────────────────────────────────────────────────┐
-  │ id            rfc3261_s3_1_c0 (RFC·section·chunk)    │
-  │ text          raw section content (~2000 chars)       │
-  │ metadata:                                             │
-  │   rfc_no       3261                                   │
-  │   rfc_title    "SIP: Session Initiation Protocol"     │
-  │   section_no   "3.1"                                  │
-  │   section_title "Overview of SIP Functionality"       │
-  │   chunk_idx    0                                      │
-  └──────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -282,59 +237,33 @@ Central configuration file. Key settings:
 ## 6. Agent Pipeline Architecture
 
 ```
-  User Query: "What is pcfg as per RFC 5939?"
+  User Query
        │
        ▼
   ┌────────────────────────────────────────────────────────────────┐
   │  LANGGRAPH STATEGRAPH                                          │
   │                                                                │
-  │  State: {messages: [...], groq_rate_limited: bool}            │
+  │  State: {messages: [...], groq_rate_limited: bool,            │
+  │          backend_used: "groq" | "ollama"}                     │
   │                                                                │
-  │  Turn 1 — agent node                                          │
-  │  ┌─────────────────────────────────────────────────────────┐  │
-  │  │  System: SYSTEM_PROMPT + trace_status + doc_status      │  │
-  │  │  Human:  "What is pcfg as per RFC 5939?"                │  │
-  │  │                                                         │  │
-  │  │  LLM response: tool_call {                              │  │
-  │  │    name: "search_rfc"                                   │  │
-  │  │    args: {query: "pcfg potential configuration",        │  │
-  │  │           rfc_filter: [5939]}                           │  │
-  │  │  }                                                      │  │
-  │  └─────────────────────────────────────────────────────────┘  │
-  │                   │ tool_calls present → route to tools        │
-  │                   ▼                                            │
-  │  Turn 1 — tools node                                          │
-  │  ┌─────────────────────────────────────────────────────────┐  │
-  │  │  execute search_rfc(query="pcfg potential configuration",│  │
-  │  │                     rfc_filter=[5939])                  │  │
-  │  │                                                         │  │
-  │  │  → Pass 1: Dense semantic search (cosine/HNSW)          │  │
-  │  │  → Pass 2: BM25 sparse search (TF-IDF weighted)         │  │
-  │  │  → RRF fusion: score = Σ 1/(60 + rank)                  │  │
-  │  │                                                         │  │
-  │  │  ToolMessage: {results: [{source: "RFC 5939 §3.5.1",    │  │
-  │  │    content: "a=pcfg (potential configuration)..."}]}    │  │
-  │  └─────────────────────────────────────────────────────────┘  │
-  │                   │ loop back to agent                         │
-  │                   ▼                                            │
-  │  Turn 2 — agent node                                          │
-  │  ┌─────────────────────────────────────────────────────────┐  │
-  │  │  [previous messages + ToolMessage]                      │  │
-  │  │                                                         │  │
-  │  │  LLM response: text answer (no tool_calls)              │  │
-  │  │  "### What is pcfg?\n\n**pcfg** (potential             │  │
-  │  │   configuration) is defined in RFC 5939 §4..."          │  │
-  │  └─────────────────────────────────────────────────────────┘  │
-  │                   │ no tool_calls → route to END              │
-  │                   ▼                                            │
-  │               END                                             │
+  │  Turn 1 (agent node):                                         │
+  │    Groq with tool_choice="required"                           │
+  │    → tool_call {name: "search_rfc", args: {...}}              │
+  │                                                                │
+  │  Turn 1 (tools node):                                         │
+  │    execute search_rfc → BM25 + semantic + RRF fusion          │
+  │    → ToolMessage with RFC chunks                              │
+  │                                                                │
+  │  Turn 2 (agent node):                                         │
+  │    [messages + ToolMessage]                                    │
+  │    → text answer (no tool_calls) → END                        │
   └────────────────────────────────────────────────────────────────┘
        │
        ▼
-  _sanitize_answer(raw)  ← strip any leaked tool names
+  _sanitize_answer(raw)  ← strip leaked tool names
        │
        ▼
-  Return {answer, reasoning_trace, call_flow, groq_rate_limited, ollama_model}
+  Return {answer, reasoning_trace, call_flow, backend_used}
 ```
 
 ---
@@ -344,27 +273,23 @@ Central configuration file. Key settings:
 ### 7.1 User Question (No Trace)
 
 ```
-  User ──► [chat_input] ──► session_state.pending_query
-                                      │
-                        AgentOrchestrator.run(query)
-                                      │
-                               LangGraph loop
-                                      │
-                           ┌──────────┴──────────┐
-                           │                     │
-                    search_rfc()           diagnose_sip_error()
-                           │                     │
-                    VectorStore               VectorStore
-                    .search_rfc()            .search_rfc()
-                           │                     │
-                    ChromaDB query         ChromaDB query
-                    sip_rfcs collection    sip_rfcs collection
-                           └──────────┬──────────┘
-                                      │
-                              LLM synthesizes answer
-                                      │
-                           app.py renders response
-                           with citation pills + timing
+  User ──► chat_input ──► session_state.pending_query
+                                    │
+                      AgentOrchestrator.run(query)
+                                    │
+                             LangGraph loop
+                                    │
+                         ┌──────────┴──────────┐
+                         │                     │
+                  search_rfc()           diagnose_sip_error()
+                         │                     │
+                  ChromaDB + BM25        ChromaDB + BM25
+                         └──────────┬──────────┘
+                                    │
+                            LLM synthesizes answer
+                                    │
+                         app.py renders response
+                         with backend badge + timing
 ```
 
 ### 7.2 Trace Upload Flow
@@ -376,53 +301,12 @@ Central configuration file. Key settings:
                      ┌──────────┴──────────┐
                      │          │          │
                   .txt       .html      .pcap
-                     │          │          │
-               text_parser  html_parser  pcap_parser
-                     │          │          │
                      └──────────┴──────────┘
-                                │
-                     List[Dict] messages
                                 │
                      vs.clear_trace()
                      vs.add_trace_messages(msgs)
-                           [sip_trace collection]
                                 │
                      pending_auto_analysis = True
-                                │
-                     Agent runs 9-section
-                     AUTO_ANALYSIS_PROMPT
-```
-
-### 7.3 Document Ingestion Flow
-
-```
-  File upload / URL input
-         │
-         ├── ingest_file(bytes, filename)    ← file upload path
-         │        │
-         │   extension check
-         │   ├── .pdf  ──► _parse_pdf()   via pypdf
-         │   ├── .docx ──► _parse_docx()  via python-docx
-         │   ├── .html ──► _parse_html()  via BeautifulSoup
-         │   └── .txt  ──► _parse_txt()   raw UTF-8
-         │
-         └── ingest_url(url)                 ← URL fetch path
-                  │
-              requests.get(url)
-                  │
-              content-type check
-              ├── pdf  ──► _parse_pdf()
-              └── html ──► _parse_html()
-         
-         │ both paths produce:
-         ▼
-  List[{id, text, doc_id, doc_name, doc_type, chunk_idx}]
-         │
-  vs.add_doc_chunks(chunks)
-         │
-  ChromaDB upsert ──► user_docs collection (PERMANENT)
-         │
-  st.rerun() ──► sidebar doc list refreshes
 ```
 
 ---
@@ -430,48 +314,42 @@ Central configuration file. Key settings:
 ## 8. LLM Strategy and Fallback Design
 
 ```
-  User Query (Turn 0)
+  Agent Query (Turn 0)
       │
       ▼
-  ┌────────────────────────────────────────────────┐
-  │  groq_with_tools_required.invoke()             │  ← Turn 0: tool call MANDATORY
-  │  (tool_choice="required")                      │
-  └────────────────────────────────────────────────┘
-      │                         │
-   Success (tool call made)  Exception
-      │                         │
-      ▼                   Is 429?  ──YES──► ollama_with_tools.invoke()
-  tools node executes             │
-      │                        NO │
-      ▼                           ▼
-  Turn 1+ agent node       groq_with_tools.invoke()
-  ┌───────────────────┐    (retry with tools, not required)
-  │ groq_with_tools   │
-  └───────────────────┘
+  ┌─────────────────────────────────────┐
+  │  Groq (groq_with_tools_required)    │  ← turn 0: RFC lookup mandatory
+  │  tool_choice="required"             │
+  └─────────────────────────────────────┘
       │                    │
-   Success              Exception
-      │              Is 429?  ──YES──► ollama_with_tools.invoke()
+   Success              Failure / 429
+      │                    │
+      ▼              wait 5s → retry Groq
+  tools node              │
+      │               Still failing?
       ▼                    │
-   Final turn         groq_plain.invoke() (non-429 error fallback)
-  (is_final=True)
-  ┌──────────────┐
-  │ groq_plain   │  ← no tools; forces immediate answer
-  └──────────────┘
+  Turn 1+                  ▼
+  Groq (tools)    Ollama Cloud (gpt-oss:120b)
+                  with retry backoff 5→10→20→30→60s
 ```
 
-**Why five LLM variants?**
+**LLM variants per turn:**
 
 | Variant | When used |
 |---|---|
-| `groq_with_tools_required` | Turn 0 — forces at least one RFC lookup before answering |
-| `groq_with_tools` | Turn 1+ — agent calls tools or answers freely |
-| `groq_plain` | Final turn (MAX_ITERATIONS) or non-429 error retry |
-| `ollama_with_tools` | Any non-final turn when Groq returns 429 |
-| `ollama_plain` | Final turn when Groq returns 429 |
+| `groq_with_tools_required` | Turn 0 — forces at least one RFC lookup |
+| `groq_with_tools` | Turn 1+ — tools optional |
+| `groq_plain` | Final turn (MAX_ITERATIONS=14) |
+| `ollama_cloud_with_tools` | Any non-final turn when Groq fails |
+| `ollama_cloud_plain` | Final turn when Groq fails |
 
-**TruLens feedback LLM routing** (independent of the agent):
-- Primary: Groq `llama-3.1-8b-instant` (lighter model for eval)
-- Fallback: Ollama `gemma4:e4b` on HTTP 429
+**TruLens eval LLM routing (independent of agent):**
+
+| Layer | Model | Notes |
+|---|---|---|
+| Primary | Groq `llama-3.1-8b-instant` | Tool-calling forces integer output via `submit_score` tool |
+| Fallback | Ollama Cloud `gpt-oss:120b` | Used when Groq fails |
+| Last resort | Default score `0.5` | Only if both fail |
 
 ---
 
@@ -487,86 +365,58 @@ Central configuration file. Key settings:
   │    every restart)             │
   │
   ├── rfc_cache/                  ← Downloaded RFC plain-text files
-  │   ├── rfc3261.txt             │  Avoids re-downloading on re-index
-  │   ├── rfc3550.txt             │
-  │   └── ...                     │
   │
   ├── trulens_eval.db             ← TruLens evaluation SQLite database
-  │   ├── trulens_records         │  one row per agent query
-  │   ├── trulens_feedbacks       │  RAG Triad scores (Answer/Context/Groundedness)
-  │   └── trulens_feedback_defs   │  feedback function definitions
   │
-  └── .env                        ← GROQ_API_KEY, OLLAMA_BASE_URL, OLLAMA_MODEL
-
-  Streamlit session_state (in-memory, lost on browser close):
-  ├── messages          chat history
-  ├── trace_loaded      bool
-  ├── trace_filename    str
-  ├── trace_msg_count   int
-  ├── pending_query     str
-  └── trulens_dashboard_launched  bool
+  └── .env                        ← GROQ_API_KEY, OLLAMA_CLOUD_API_KEY, model overrides
 ```
 
 ---
 
 ## 10. Technology Stack
 
-| Layer | Technology | Version | Role |
-|-------|-----------|---------|------|
-| Frontend | Streamlit | ≥1.36 | Web UI, session state, sidebar |
-| Agent Framework | LangGraph | ≥0.2 | StateGraph, ToolNode, tools_condition |
-| LLM Binding | LangChain Core | ≥0.3 | BaseMessage, StructuredTool, ChatModel interface |
-| Primary LLM | Groq Cloud API | ≥0.9 | Fast inference — Llama 4 Scout 17B |
-| Fallback LLM | Ollama (local) | — | Gemma 4 E4B, HTTP 429 fallback |
-| Vector DB | ChromaDB | ≥0.5 | Persistent cosine-similarity store |
-| Embeddings | Sentence-Transformers | ≥2.7 | all-MiniLM-L6-v2, local CPU |
-| Sparse Retrieval | rank-bm25 | ≥0.2.2 | BM25Okapi index over RFC corpus |
-| PDF Parsing | pypdf | ≥3.0 | Page-by-page text extraction |
-| DOCX Parsing | python-docx | ≥1.0 | Paragraph extraction |
-| HTML Parsing | BeautifulSoup4 | ≥4.12 | Tag stripping, text extraction |
-| PCAP Parsing | Scapy | ≥2.5 | Packet decoding, RTP analysis |
-| HTTP Client | requests | ≥2.31 | RFC download, URL fetch |
-| RAG Evaluation | TruLens | 1.5.3 | RAG Triad (Answer/Context/Groundedness) |
-| Eval LLM Client | openai (SDK) | ≥1.0 | Groq + Ollama API calls for feedback scoring |
+| Layer | Technology | Role |
+|-------|-----------|------|
+| Frontend | Streamlit ≥1.36 | Web UI, session state, sidebar |
+| Agent Framework | LangGraph ≥0.2 | StateGraph, ToolNode, tools_condition |
+| LLM Binding | LangChain Core ≥0.3 | BaseMessage, StructuredTool, ChatModel interface |
+| Primary LLM | Groq Cloud API | Fast inference — Llama 4 Scout 17B |
+| Fallback LLM | Ollama Cloud | gpt-oss:120b hosted inference |
+| Vector DB | ChromaDB ≥0.5 | Persistent cosine-similarity store |
+| Embeddings | Sentence-Transformers ≥2.7 | all-MiniLM-L6-v2, local CPU |
+| Sparse Retrieval | rank-bm25 ≥0.2.2 | BM25Okapi index over RFC corpus |
+| PDF Parsing | pypdf ≥3.0 | Page-by-page text extraction |
+| PCAP Parsing | Scapy ≥2.5 | Packet decoding, RTP analysis |
+| RAG Evaluation | TruLens 1.5.3 | RAG Triad (Answer/Context/Groundedness) |
+| Eval LLM Client | openai SDK ≥1.0 | Groq + Ollama Cloud calls for feedback scoring |
 
 ---
 
 ## 11. Key Design Decisions
 
 ### 11.1 Hybrid Search (BM25 + Semantic + RRF)
-Short technical abbreviations like `pcfg`, `acfg`, `srtp`, `ssrc` produce low-quality embeddings because `all-MiniLM-L6-v2` rarely saw them in training. Relying on semantic search alone causes poor recall for acronym-heavy queries.
 
-The system runs **two independent retrieval passes on every query** and fuses them with **Reciprocal Rank Fusion (Cormack et al., 2009)**:
+Short technical abbreviations like `pcfg`, `srtp`, `ssrc` produce low-quality embeddings. The system runs two independent retrieval passes on every query and fuses them with **Reciprocal Rank Fusion (Cormack et al., 2009)**. Neither raw cosine-similarity nor BM25 scores are used directly — only rank position matters, making fusion robust to incompatible score scales.
 
-1. **Dense pass** — ChromaDB HNSW cosine-similarity search using `all-MiniLM-L6-v2` embeddings. Strong on natural-language questions and paraphrased queries.
-2. **Sparse pass** — `BM25Okapi` (rank-bm25) over the full RFC corpus. Strong on exact term matches, acronyms, and header names like `Via`, `CSeq`, `RSeq`.
+### 11.2 Tool-Calling for Eval Scoring
 
-Each pass independently retrieves `top_k × 2` candidates. RRF merges them by rank position:
+Instead of asking the eval LLM to output a number as free text (which fails on empty/prose responses), the provider defines a `submit_score` tool with `"type": "integer"` in its JSON schema and forces `tool_choice` to guarantee the model invokes it. This eliminates all `ParseError` failures from regex-based score extraction.
 
-```
-RRF_score(chunk) = Σ  1 / (k + rank(chunk))     k = 60
-                   over each list containing chunk
-```
+### 11.3 Single-Call Groundedness
 
-Neither the raw cosine-similarity score nor the BM25 score is used directly — only rank position matters, making the fusion robust to the very different score scales of the two retrievers. When `rfc_filter` is specified, BM25 scores for non-matching RFCs are zeroed before ranking.
+Groundedness is evaluated in one API call (whole answer vs. full context) rather than per-sentence. This reduces eval calls from ~17 to ~8 per query, which fits within free-tier rate limits and reduces latency without meaningfully reducing score accuracy for coherent protocol answers.
 
-The BM25 index is built in-memory at startup (or lazily after ingest) by pulling all 1,806 RFC chunks from ChromaDB and tokenising with `re.findall(r'[a-zA-Z0-9]+', text.lower())`.
+### 11.4 Deterministic Tool-Name Sanitiser
 
-### 11.2 Deterministic Tool-Name Sanitiser
-The Llama 4 Scout model occasionally mentions internal tool names (`search_rfc`, `cross_reference`, etc.) in its final answer text. Prompt instructions alone are insufficient. A deterministic regex post-processor (`_sanitize_answer`) is applied after every LLM response — it drops any bullet or prose sentence that contains a tool name, independent of what the model says.
+The agent occasionally leaks internal tool names (`search_rfc`, etc.) into responses. A deterministic regex post-processor (`_sanitize_answer`) drops any bullet or prose sentence containing a tool name, independent of LLM compliance.
 
-### 11.3 Ephemeral Trace, Permanent RFC + Docs
-The `sip_trace` collection is deleted and recreated on every `VectorStore.__init__()` because:
-- Traces are session-specific; carrying forward a previous trace would pollute analysis
-- ChromaDB's `PersistentClient` stores everything on disk, so without explicit clearing the old trace would persist across restarts
+### 11.5 `backend_used` State Field
 
-User docs and RFCs, by contrast, are explicitly managed — the user adds and removes them intentionally.
+The LangGraph state includes a `backend_used` string (`"groq"` | `"ollama"`) that is updated on every agent node invocation. `app.py` reads this field from `final_state` and renders the correct backend badge with model name in the timing pill, giving users visibility into which LLM answered.
 
-### 11.4 `@st.cache_resource` for VectorStore
-A single `VectorStore` object is shared across all Streamlit reruns via `@st.cache_resource`. This avoids re-loading the sentence-transformer model and re-opening ChromaDB on every user interaction. The "Re-index RFCs" button calls `vs.clear_rfcs()` to delete the ChromaDB collection before clearing the Streamlit cache and forcing a fresh object creation on the next rerun.
+### 11.6 Ephemeral Trace, Permanent RFC + Docs
 
-### 11.5 MAX_ITERATIONS Guard
-The LangGraph loop is capped at `MAX_ITERATIONS = 14` agent turns. When this limit is reached, a final `HumanMessage` is injected telling the model to produce its answer immediately without further tool calls. This prevents runaway agent loops that could exhaust the Groq rate limit.
+`sip_trace` is deleted and recreated on every `VectorStore.__init__()` — traces are session-specific and must not pollute subsequent sessions. User docs and RFCs are explicitly managed by the user.
 
 ---
 
@@ -574,15 +424,14 @@ The LangGraph loop is capped at `MAX_ITERATIONS = 14` agent turns. When this lim
 
 | Limitation | Impact | Mitigation |
 |-----------|--------|-----------|
-| Groq rate limits (HTTP 429) | Queries fail during burst usage | Ollama local fallback |
+| Groq rate limits (HTTP 429) | Queries slow on burst usage | Ollama Cloud fallback with retry backoff |
+| Ollama Cloud `gpt-oss:120b` latency | Slower than Groq on complex queries | Only activated on Groq failure |
 | JS-rendered URLs | BeautifulSoup cannot extract text from SPAs | Warning shown to user |
 | No real-time capture | Cannot analyse live traffic | Upload-only model |
 | Scapy requires root on some OS | PCAP parsing may fail | Error message shown |
 | MiniLM-L6-v2 limited vocabulary | Poor embeddings for novel acronyms | BM25 sparse retrieval + RRF fusion |
 | Single-user architecture | No auth / user isolation | Designed for local use |
-| Llama 4 Scout tool-name leakage | Mentions internal tool names in answers | `_sanitize_answer` post-processor |
-| TruLens feedback latency | Scores appear 10–30s after the response | DEFERRED async evaluator decouples scoring from response |
-| TruLens 1.5.3 OTEL incompatibility | v2.x OTEL mode breaks Lens selectors | Pinned to 1.5.3; `TRULENS_OTEL_TRACING=false` |
+| TruLens 1.5.3 OTEL incompatibility | v2.x OTEL mode breaks Lens selectors | `TRULENS_OTEL_TRACING=false` env var |
 
 ---
 
@@ -593,10 +442,10 @@ The LangGraph loop is capped at `MAX_ITERATIONS = 14` agent turns. When this lim
 | Metric | Input A | Input B | Interpretation |
 |---|---|---|---|
 | Answer Relevance | User question | Agent answer | Is the answer on-topic? |
-| Context Relevance | User question | Each RFC chunk retrieved | Did the retrieval find the right RFC sections? |
-| Groundedness | All RFC chunks (joined) | Agent answer | Is the answer backed by retrieved RFC text vs. hallucinated? |
+| Context Relevance | User question | Each RFC chunk retrieved | Did retrieval find the right RFC sections? |
+| Groundedness | All RFC chunks (joined) | Agent answer | Is the answer backed by retrieved text? |
 
-All three scores are on a **0.0–1.0 scale** (higher = better).
+All scores on **0.0–1.0** scale (higher = better).
 
 ### 13.2 Recording Architecture
 
@@ -604,33 +453,28 @@ All three scores are on a **0.0–1.0 scale** (higher = better).
 app.py (after AgentOrchestrator.run())
         │
         ▼
-  Extract contexts from reasoning_trace:
-    JSON tool results → parse "results[].content" text
+  Extract contexts from reasoning_trace (tool JSON → plain text)
         │
         ▼
   with TruCustomApp (DEFERRED mode):
     SIPAssistantApp.query(question, answer, contexts)
-      └── _extract_contexts(contexts)  ← @instrument, TruLens records rets
+      └── _extract_contexts(contexts)  ← @instrument
         │
-  TruCustomApp.__exit__() → writes pending rows to trulens_eval.db
-        │
-  Background evaluator thread (started on TruSession init)
+  Background evaluator thread
         │
   GroqOllamaProvider._create_chat_completion()
+    ├── Primary: Groq llama-3.1-8b-instant (tool-calling submit_score)
+    └── Fallback: Ollama Cloud gpt-oss:120b
         │
-  trulens_eval.db updated with scores
-        │
-  Streamlit sidebar reads get_leaderboard() → displays avg scores
+  trulens_eval.db → Streamlit sidebar scores
 ```
 
 ### 13.3 Provider Implementation
 
-`GroqOllamaProvider` extends `LLMProvider` directly (no dependency on `trulens-providers-openai`) and overrides three methods:
+`GroqOllamaProvider` overrides three `LLMProvider` methods to bypass the `endpoint` requirement and use `_create_chat_completion` directly:
 
 | Overridden method | Why |
 |---|---|
-| `generate_score()` | Parent asserts `endpoint is not None` — we bypass by calling `_create_chat_completion` directly |
-| `generate_score_and_reasons()` | Same — plus extracts score with `re_configured_rating` |
-| `groundedness_measure_with_cot_reasons()` | Uses `sent_tokenize` + per-sentence scoring with a single-score prompt to avoid `re_configured_rating` ambiguity from multi-score CoT blocks |
-
-`_create_chat_completion()` tries Groq first; catches HTTP 429 and retries with Ollama.
+| `generate_score()` | Bypasses `endpoint` assertion; parses integer from `submit_score` tool call |
+| `generate_score_and_reasons()` | Same; returns `(normalised_score, {"reason": response})` |
+| `groundedness_measure_with_cot_reasons()` | Single-call whole-answer scoring instead of per-sentence |
