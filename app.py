@@ -1042,7 +1042,19 @@ def _render_sidebar(vs):
                 chips_html += '</div>'
                 st.markdown(chips_html, unsafe_allow_html=True)
 
-                _n = int(_lb["n_records"].sum()) if "n_records" in _lb.columns else "?"
+                try:
+                    import sqlite3 as _sqlite3
+                    from observability.trulens_setup import _DB_PATH
+                    _conn = _sqlite3.connect(_DB_PATH)
+                    # Count records that belong to sip-rfc-rag apps (exclude test runs)
+                    _n = _conn.execute(
+                        "SELECT count(*) FROM trulens_records r "
+                        "JOIN trulens_apps a ON r.app_id = a.app_id "
+                        "WHERE a.app_name = 'sip-rfc-rag'"
+                    ).fetchone()[0]
+                    _conn.close()
+                except Exception:
+                    _n = "?"
                 st.caption(f"{_n} queries evaluated · 🟢 ≥0.8 · 🟡 ≥0.5 · 🔴 <0.5")
             else:
                 st.caption("No evaluations yet — ask a question to start.")
