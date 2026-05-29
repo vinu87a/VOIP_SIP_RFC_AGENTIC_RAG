@@ -223,6 +223,16 @@ def _build_graph(vector_store):
         max_tokens=4096,
     ).bind_tools(lc_tools)
 
+    # On turn 0, force at least one tool call so the agent always retrieves
+    # RFC/trace context before answering — prevents the LLM from answering
+    # entirely from training data without grounding in the knowledge base.
+    groq_with_tools_required = ChatGroq(
+        model=GROQ_MODEL,
+        api_key=GROQ_API_KEY,
+        temperature=0.1,
+        max_tokens=4096,
+    ).bind_tools(lc_tools, tool_choice="required")
+
     groq_plain = ChatGroq(
         model=GROQ_MODEL,
         api_key=GROQ_API_KEY,
@@ -260,8 +270,16 @@ def _build_graph(vector_store):
                 )
             )]
 
-        primary  = groq_plain  if is_final else groq_with_tools
-        fallback = ollama_plain if is_final else ollama_with_tools
+        if is_final:
+            primary  = groq_plain
+            fallback = ollama_plain
+        elif agent_turns == 0:
+            # First turn: require at least one tool call for RFC grounding
+            primary  = groq_with_tools_required
+            fallback = ollama_with_tools   # Ollama doesn't support tool_choice="required"
+        else:
+            primary  = groq_with_tools
+            fallback = ollama_with_tools
 
         # 1. Try Groq ──────────────────────────────────────────────────────────
         try:
@@ -284,10 +302,16 @@ def _build_graph(vector_store):
                         "groq_rate_limited": True,
                     }
 
-            # 2b. Other Groq error → retry Groq without tools ──────────────────
-            logger.error("LLM call failed (%s) — retrying Groq without tools", exc)
+            # 2b. Other Groq error — on turn 0, retry WITH tools so RFC grounding
+            # is preserved; on later turns, retry without tools for a plain answer.
+            retry_llm = groq_with_tools if agent_turns == 0 else groq_plain
+            logger.error(
+                "LLM call failed (%s) — retrying Groq (%s)",
+                exc,
+                "with_tools" if agent_turns == 0 else "plain",
+            )
             try:
-                response = groq_plain.invoke(invoke_msgs)
+                response = retry_llm.invoke(invoke_msgs)
                 return {"messages": [response]}
             except Exception as exc2:
                 # Plain Groq also 429 → fall back to Ollama plain
@@ -424,7 +448,12 @@ class AgentOrchestrator:
         else:
             trace_status = (
                 "\n\n## Trace Status\n"
-                "No SIP trace is currently loaded. Answer from the RFC knowledge base only.\n\n"
+                "No SIP trace is currently loaded.\n\n"
+                "**MANDATORY — RFC lookup required:**\n"
+                "You MUST call `search_rfc` at least once before writing your answer. "
+                "Do NOT rely on training knowledge alone — retrieve the relevant RFC sections "
+                "first, then base your answer on what you retrieved. "
+                "If the question covers multiple topics, call `search_rfc` once per topic.\n\n"
                 "**Active format mode: Mode A (general protocol question)** — answer in "
                 "focused prose calibrated to the question. Use a heading only when the "
                 "answer genuinely spans multiple distinct topics. No severity labels, no "

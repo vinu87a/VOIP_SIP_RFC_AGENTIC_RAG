@@ -1,9 +1,9 @@
 # High Level Design (HLD)
 # SIP / RTP Agentic RAG Protocol Assistant
 
-**Version:** 1.0  
-**Date:** 2026-05-27  
-**Stack:** Python 3.11 · LangGraph · Groq (Llama 4 Scout) · Ollama (Gemma 4) · ChromaDB · Sentence-Transformers · Streamlit
+**Version:** 1.1  
+**Date:** 2026-05-29  
+**Stack:** Python 3.11 · LangGraph · Groq (Llama 4 Scout) · Ollama (Gemma 4) · ChromaDB · Sentence-Transformers · Streamlit · TruLens 1.5.3
 
 ---
 
@@ -21,6 +21,7 @@
 10. [Technology Stack](#10-technology-stack)
 11. [Key Design Decisions](#11-key-design-decisions)
 12. [Limitations and Known Constraints](#12-limitations-and-known-constraints)
+13. [Observability Architecture](#13-observability-architecture)
 
 ---
 
@@ -116,6 +117,21 @@ The system is built on the **Retrieval-Augmented Generation (RAG)** pattern exte
 │  (cosine similarity,   │
 │  all-MiniLM-L6-v2)     │
 └────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    OBSERVABILITY LAYER (observability/)                      │
+│                                                                             │
+│   Post-hoc TruLens recording — non-blocking, runs after each response      │
+│                                                                             │
+│   app.py ──► SIPAssistantApp.query(question, answer, contexts)             │
+│                    │                                                        │
+│             TruCustomApp (DEFERRED mode) ──► trulens_eval.db               │
+│                    │                                                        │
+│             Background evaluator (GroqOllamaProvider)                      │
+│             • Answer Relevance  • Context Relevance  • Groundedness        │
+│                    │                                                        │
+│             Sidebar scores  +  TruLens Dashboard :8502                     │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -194,6 +210,16 @@ Responsible for populating the vector store. Five sub-modules:
 | `text_parser.py` | `.txt`, `.log`, `.sip` | List of parsed SIP message dicts |
 | `html_parser.py` | `.html`, `.htm` | List of parsed SIP message dicts |
 | `pcap_parser.py` | `.pcap`, `.pcapng` | SIP message dicts + RTP stream summaries |
+
+### 4.9 Observability Layer (`observability/trulens_setup.py`)
+
+Provides RAG quality evaluation using [TruLens](https://www.trulens.org/) 1.5.3. Runs entirely post-hoc — it never blocks the agent response.
+
+**Key design choices:**
+- `SIPAssistantApp` is a **pure recording shell** — it does not run the agent. `app.py` runs `AgentOrchestrator` as before, then hands the pre-computed `(question, answer, contexts)` to TruLens for recording.
+- `GroqOllamaProvider` extends TruLens's `LLMProvider` directly (bypassing `trulens-providers-openai`) and overrides `generate_score`, `generate_score_and_reasons`, and `groundedness_measure_with_cot_reasons` to call `_create_chat_completion` directly, avoiding the `endpoint` requirement.
+- `FeedbackMode.DEFERRED` — feedback rows are written to SQLite as pending, then processed by a `start_evaluator()` background thread. This eliminates any threading conflict with Streamlit.
+- RFC context chunks are extracted from the agent's `reasoning_trace` JSON and cleaned to plain text before being passed to TruLens.
 
 ### 4.8 Configuration (`config.py`)
 
@@ -404,34 +430,48 @@ Central configuration file. Key settings:
 ## 8. LLM Strategy and Fallback Design
 
 ```
-  User Query
+  User Query (Turn 0)
       │
       ▼
-  ┌─────────────────────────────────────────┐
-  │         groq_with_tools.invoke()        │  ← Primary path
-  └─────────────────────────────────────────┘
+  ┌────────────────────────────────────────────────┐
+  │  groq_with_tools_required.invoke()             │  ← Turn 0: tool call MANDATORY
+  │  (tool_choice="required")                      │
+  └────────────────────────────────────────────────┘
+      │                         │
+   Success (tool call made)  Exception
+      │                         │
+      ▼                   Is 429?  ──YES──► ollama_with_tools.invoke()
+  tools node executes             │
+      │                        NO │
+      ▼                           ▼
+  Turn 1+ agent node       groq_with_tools.invoke()
+  ┌───────────────────┐    (retry with tools, not required)
+  │ groq_with_tools   │
+  └───────────────────┘
       │                    │
    Success              Exception
-      │                    │
-      ▼              Is 429?  ──YES──► ollama_with_tools.invoke()
-   Return                │                    │
-   response           NO  │             Success/Fail
-                          ▼                    │
-                  groq_plain.invoke()    Return with
-                  (retry w/o tools)     groq_rate_limited=True
-                          │
-                   Success/Fail
-                          │
-                    If also 429:
-                    ollama_plain.invoke()
+      │              Is 429?  ──YES──► ollama_with_tools.invoke()
+      ▼                    │
+   Final turn         groq_plain.invoke() (non-429 error fallback)
+  (is_final=True)
+  ┌──────────────┐
+  │ groq_plain   │  ← no tools; forces immediate answer
+  └──────────────┘
 ```
 
-**Why four LLMs?**  
-The combination of `_with_tools` and `_plain` variants is needed because:
-- `_with_tools` — for normal tool-calling turns (model can emit tool calls)
-- `_plain` — for the forced-final-answer turn (when `MAX_ITERATIONS` is reached, no more tools allowed)
-- Groq variants — fast cloud inference, used first
-- Ollama variants — local fallback, used only on HTTP 429 rate-limit errors
+**Why five LLM variants?**
+
+| Variant | When used |
+|---|---|
+| `groq_with_tools_required` | Turn 0 — forces at least one RFC lookup before answering |
+| `groq_with_tools` | Turn 1+ — agent calls tools or answers freely |
+| `groq_plain` | Final turn (MAX_ITERATIONS) or non-429 error retry |
+| `ollama_with_tools` | Any non-final turn when Groq returns 429 |
+| `ollama_plain` | Final turn when Groq returns 429 |
+
+**TruLens feedback LLM routing** (independent of the agent):
+- Primary: Groq `llama-3.1-8b-instant` (lighter model for eval)
+- Fallback: Ollama `gemma4:e4b` on HTTP 429
 
 ---
 
@@ -451,6 +491,11 @@ The combination of `_with_tools` and `_plain` variants is needed because:
   │   ├── rfc3550.txt             │
   │   └── ...                     │
   │
+  ├── trulens_eval.db             ← TruLens evaluation SQLite database
+  │   ├── trulens_records         │  one row per agent query
+  │   ├── trulens_feedbacks       │  RAG Triad scores (Answer/Context/Groundedness)
+  │   └── trulens_feedback_defs   │  feedback function definitions
+  │
   └── .env                        ← GROQ_API_KEY, OLLAMA_BASE_URL, OLLAMA_MODEL
 
   Streamlit session_state (in-memory, lost on browser close):
@@ -458,7 +503,8 @@ The combination of `_with_tools` and `_plain` variants is needed because:
   ├── trace_loaded      bool
   ├── trace_filename    str
   ├── trace_msg_count   int
-  └── pending_query     str
+  ├── pending_query     str
+  └── trulens_dashboard_launched  bool
 ```
 
 ---
@@ -480,6 +526,8 @@ The combination of `_with_tools` and `_plain` variants is needed because:
 | HTML Parsing | BeautifulSoup4 | ≥4.12 | Tag stripping, text extraction |
 | PCAP Parsing | Scapy | ≥2.5 | Packet decoding, RTP analysis |
 | HTTP Client | requests | ≥2.31 | RFC download, URL fetch |
+| RAG Evaluation | TruLens | 1.5.3 | RAG Triad (Answer/Context/Groundedness) |
+| Eval LLM Client | openai (SDK) | ≥1.0 | Groq + Ollama API calls for feedback scoring |
 
 ---
 
@@ -533,3 +581,56 @@ The LangGraph loop is capped at `MAX_ITERATIONS = 14` agent turns. When this lim
 | MiniLM-L6-v2 limited vocabulary | Poor embeddings for novel acronyms | BM25 sparse retrieval + RRF fusion |
 | Single-user architecture | No auth / user isolation | Designed for local use |
 | Llama 4 Scout tool-name leakage | Mentions internal tool names in answers | `_sanitize_answer` post-processor |
+| TruLens feedback latency | Scores appear 10–30s after the response | DEFERRED async evaluator decouples scoring from response |
+| TruLens 1.5.3 OTEL incompatibility | v2.x OTEL mode breaks Lens selectors | Pinned to 1.5.3; `TRULENS_OTEL_TRACING=false` |
+
+---
+
+## 13. Observability Architecture
+
+### 13.1 RAG Triad
+
+| Metric | Input A | Input B | Interpretation |
+|---|---|---|---|
+| Answer Relevance | User question | Agent answer | Is the answer on-topic? |
+| Context Relevance | User question | Each RFC chunk retrieved | Did the retrieval find the right RFC sections? |
+| Groundedness | All RFC chunks (joined) | Agent answer | Is the answer backed by retrieved RFC text vs. hallucinated? |
+
+All three scores are on a **0.0–1.0 scale** (higher = better).
+
+### 13.2 Recording Architecture
+
+```
+app.py (after AgentOrchestrator.run())
+        │
+        ▼
+  Extract contexts from reasoning_trace:
+    JSON tool results → parse "results[].content" text
+        │
+        ▼
+  with TruCustomApp (DEFERRED mode):
+    SIPAssistantApp.query(question, answer, contexts)
+      └── _extract_contexts(contexts)  ← @instrument, TruLens records rets
+        │
+  TruCustomApp.__exit__() → writes pending rows to trulens_eval.db
+        │
+  Background evaluator thread (started on TruSession init)
+        │
+  GroqOllamaProvider._create_chat_completion()
+        │
+  trulens_eval.db updated with scores
+        │
+  Streamlit sidebar reads get_leaderboard() → displays avg scores
+```
+
+### 13.3 Provider Implementation
+
+`GroqOllamaProvider` extends `LLMProvider` directly (no dependency on `trulens-providers-openai`) and overrides three methods:
+
+| Overridden method | Why |
+|---|---|
+| `generate_score()` | Parent asserts `endpoint is not None` — we bypass by calling `_create_chat_completion` directly |
+| `generate_score_and_reasons()` | Same — plus extracts score with `re_configured_rating` |
+| `groundedness_measure_with_cot_reasons()` | Uses `sent_tokenize` + per-sentence scoring with a single-score prompt to avoid `re_configured_rating` ambiguity from multi-score CoT blocks |
+
+`_create_chat_completion()` tries Groq first; catches HTTP 429 and retries with Ollama.

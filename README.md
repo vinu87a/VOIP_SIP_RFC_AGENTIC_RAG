@@ -1,8 +1,8 @@
 # VOIP / SIP RFC Agentic RAG
 
-An agentic RAG system for SIP and VoIP protocol analysis. Ask protocol questions grounded in 23 IETF RFCs, or upload a SIP trace and get a detailed diagnostic report — with every claim cited back to the governing RFC.
+An agentic RAG system for SIP and VoIP protocol analysis. Ask protocol questions grounded in 25 IETF RFCs, or upload a SIP trace and get a detailed diagnostic report — with every claim cited back to the governing RFC.
 
-Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, and **Streamlit**.
+Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, **Streamlit**, and **TruLens** for RAG evaluation observability.
 
 ---
 
@@ -26,11 +26,12 @@ Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, and **Streamli
 
 - **RFC Knowledge Base** — 25 SIP/RTP/SDP RFCs ingested, chunked, and embedded into a local ChromaDB vector store
 - **Hybrid BM25 + semantic search** — every RFC query runs dense (cosine/HNSW) and sparse (BM25Okapi) retrieval in parallel, fused with Reciprocal Rank Fusion (RRF); handles both natural-language questions and isolated acronyms equally well
-- **Agentic reasoning** — LangGraph ReAct loop with up to 14 tool-call iterations per query
+- **Agentic reasoning** — LangGraph ReAct loop with up to 14 tool-call iterations per query; first turn uses `tool_choice="required"` to guarantee RFC grounding before every answer
 - **SIP trace analysis** — upload a `.pcap` or SIP text capture; the agent reconstructs the call flow, extracts SDP bodies, and diagnoses errors
 - **Document Q&A** — upload PDFs, DOCX, HTML, or plain text files; the agent searches them alongside the RFC knowledge base
 - **Groq + Ollama fallback** — primary inference via Groq API; automatic fallback to a local Ollama model on HTTP 429 rate-limit
 - **Auto-diagnostic report** — one-click 9-section analysis of any uploaded trace (signaling path, media/codecs, authentication, security, timing, compliance)
+- **TruLens RAG observability** — RAG Triad scores (Answer Relevance, Context Relevance, Groundedness) computed asynchronously after every query via a custom Groq→Ollama feedback provider; scores displayed live in the sidebar and the TruLens dashboard
 
 ---
 
@@ -66,33 +67,53 @@ Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, and **Streamli
 ```
 Streamlit UI (app.py)
         │
-        ▼
-AgentOrchestrator (LangGraph StateGraph)
+        ├─── AgentOrchestrator (LangGraph StateGraph)
+        │           │
+        │      ┌────┴────┐
+        │      │  agent  │◄──────────────────┐
+        │      │  node   │                   │
+        │      └────┬────┘                   │
+        │           │ tool_calls?            │
+        │           ▼                        │
+        │      ┌─────────┐                   │
+        │      │  tools  │ ──────────────────┘
+        │      │  node   │  (ToolNode loops back)
+        │      └─────────┘
+        │           │
+        │      ┌────┴──────────────────────────────┐
+        │      │  search_rfc  /  search_trace      │
+        │      │  reconstruct_call_flow            │
+        │      │  diagnose_sip_error               │
+        │      │  cross_reference  /  search_docs  │
+        │      └───────────────────────────────────┘
+        │           │
+        │      ChromaDB (local vector store)
         │
-   ┌────┴────┐
-   │  agent  │◄──────────────────┐
-   │  node   │                   │
-   └────┬────┘                   │
-        │ tool_calls?            │
-        ▼                        │
-   ┌─────────┐                   │
-   │  tools  │ ──────────────────┘
-   │  node   │  (ToolNode loops back)
-   └─────────┘
-        │
-   ┌────┴──────────────────────────────┐
-   │  search_rfc  /  search_trace      │
-   │  reconstruct_call_flow            │
-   │  diagnose_sip_error               │
-   │  cross_reference  /  search_docs  │
-   └───────────────────────────────────┘
-        │
-   ChromaDB (local vector store)
+        └─── TruLens Observability (post-hoc, non-blocking)
+                    │
+               SIPAssistantApp.query()  ←  pre-computed answer + contexts
+                    │
+               DEFERRED feedback evaluator (background thread)
+                    │
+               ┌────┴──────────────────────────────────┐
+               │  Answer Relevance  (Groq→Ollama LLM)  │
+               │  Context Relevance (Groq→Ollama LLM)  │
+               │  Groundedness      (Groq→Ollama LLM)  │
+               └───────────────────────────────────────┘
+                    │
+               trulens_eval.db (local SQLite)
+               TruLens Dashboard  http://localhost:8502
 ```
 
-**LLM routing:**
-- Primary: Groq `meta-llama/llama-4-scout-17b-16e-instruct`
-- Fallback: Ollama `gemma4:e4b` (activated automatically on Groq HTTP 429)
+**LLM routing (agent):**
+- Turn 0: Groq with `tool_choice="required"` — forces at least one RFC lookup
+- Turn 1+: Groq with tools available (auto)
+- Final turn: Groq plain (no tools)
+- Any turn on 429: Ollama fallback (`gemma4:e4b`)
+
+**LLM routing (TruLens feedback evaluation):**
+- Primary: Groq `llama-3.1-8b-instant`
+- Fallback: Ollama `gemma4:e4b` (on HTTP 429)
 
 ![LangGraph Agent Diagram](langgraph_diagram.png)
 
@@ -183,6 +204,10 @@ VOIP_SIP_RFC_AGENTIC_RAG/
 │   └── parsers/            # HTML, PCAP, and plain-text parsers
 ├── store/
 │   └── vector_store.py     # ChromaDB wrapper (RFC + trace + doc collections)
+├── observability/
+│   ├── __init__.py
+│   └── trulens_setup.py    # TruLens RAG Triad evaluation (Groq→Ollama provider)
+├── trulens_eval.db         # TruLens evaluation records (git-ignored)
 ├── chroma_db/              # Local vector store (git-ignored)
 └── rfc_cache/              # Downloaded RFC text files (git-ignored)
 ```
@@ -200,3 +225,24 @@ VOIP_SIP_RFC_AGENTIC_RAG/
 | Vector store | ChromaDB |
 | PCAP parsing | Scapy |
 | UI | Streamlit |
+| RAG observability | TruLens 1.5.3 (RAG Triad — Answer Relevance, Context Relevance, Groundedness) |
+
+---
+
+## Observability
+
+Every query is automatically evaluated against the **RAG Triad** after the agent responds:
+
+| Metric | What it measures |
+|---|---|
+| **Answer Relevance** | Does the answer address the user's question? |
+| **Context Relevance** | Did the retrieved RFC chunks match the question? |
+| **Groundedness** | Is the answer supported by the retrieved context (vs. hallucinated)? |
+
+Scores appear live in the sidebar **Observability** section. To open the full evaluation dashboard:
+
+```bash
+python3 -c "from observability.trulens_setup import get_tru_session; get_tru_session().run_dashboard(port=8502, force=True)"
+```
+
+Or click the **🖥️ TruLens Dashboard** button in the sidebar, then visit [http://localhost:8502](http://localhost:8502).

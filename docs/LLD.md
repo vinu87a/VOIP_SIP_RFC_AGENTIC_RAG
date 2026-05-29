@@ -17,8 +17,9 @@
 11. [agent/orchestrator.py — LangGraph Agent Engine](#11-agentorchestratorpy--langgraph-agent-engine)
 12. [agent/prompts.py — System Prompt](#12-agentpromptspy--system-prompt)
 13. [app.py — Streamlit UI Layer](#13-apppy--streamlit-ui-layer)
-14. [Data Schemas Reference](#14-data-schemas-reference)
-15. [Inter-Module Call Flow Diagrams](#15-inter-module-call-flow-diagrams)
+14. [observability/trulens_setup.py — RAG Observability](#14-observabilitytrulens_setuppy--rag-observability)
+15. [Data Schemas Reference](#15-data-schemas-reference)
+16. [Inter-Module Call Flow Diagrams](#16-inter-module-call-flow-diagrams)
 
 ---
 
@@ -46,6 +47,11 @@ Agentic RAG/
 │   ├── tools.py                     ← Tool JSON schemas + Python dispatch implementations
 │   └── orchestrator.py             ← LangGraph StateGraph, LLM wiring, public run() API
 │
+├── observability/
+│   ├── __init__.py
+│   └── trulens_setup.py            ← TruLens RAG Triad evaluation (Groq→Ollama provider)
+│
+├── trulens_eval.db                  ← TruLens evaluation SQLite DB (git-ignored)
 └── app.py                           ← Streamlit application (UI, sidebar, chat loop)
 ```
 
@@ -53,21 +59,23 @@ Agentic RAG/
 
 ```
 app.py
-  └── agent/orchestrator.py
-        ├── agent/tools.py
-        │     └── store/vector_store.py
-        ├── agent/prompts.py
+  ├── agent/orchestrator.py
+  │     ├── agent/tools.py
+  │     │     └── store/vector_store.py
+  │     ├── agent/prompts.py
+  │     └── config.py
+  ├── ingest/rfc_fetcher.py
+  │     └── config.py
+  ├── ingest/rfc_chunker.py
+  │     └── config.py
+  ├── ingest/doc_ingest.py   (no project imports)
+  ├── ingest/parsers/text_parser.py
+  ├── ingest/parsers/html_parser.py
+  │     └── ingest/parsers/text_parser.py
+  ├── ingest/parsers/pcap_parser.py
+  │     └── ingest/parsers/text_parser.py
+  └── observability/trulens_setup.py
         └── config.py
-  └── ingest/rfc_fetcher.py
-        └── config.py
-  └── ingest/rfc_chunker.py
-        └── config.py
-  └── ingest/doc_ingest.py   (no project imports)
-  └── ingest/parsers/text_parser.py
-  └── ingest/parsers/html_parser.py
-        └── ingest/parsers/text_parser.py
-  └── ingest/parsers/pcap_parser.py
-        └── ingest/parsers/text_parser.py
 ```
 
 ---
@@ -1016,18 +1024,23 @@ Returns `True` if the exception message contains `"429"`, `"rate_limit"`, `"rate
 1. lc_tools  = _make_lc_tools(vector_store)
 2. tool_node = ToolNode(lc_tools)           ← handles tool execution automatically
 
-3. Four LLM variants:
-   groq_with_tools  = ChatGroq(...).bind_tools(lc_tools)   ← primary
-   groq_plain       = ChatGroq(...)                         ← forced-final fallback
-   ollama_with_tools= ChatOllama(...).bind_tools(lc_tools)  ← rate-limit fallback
+3. Five LLM variants:
+   groq_with_tools_required = ChatGroq(...).bind_tools(lc_tools, tool_choice="required")
+                                                              ← turn 0: RFC lookup mandatory
+   groq_with_tools  = ChatGroq(...).bind_tools(lc_tools)   ← turn 1+: tools optional
+   groq_plain       = ChatGroq(...)                         ← forced-final / error retry
+   ollama_with_tools= ChatOllama(...).bind_tools(lc_tools)  ← rate-limit fallback (turn 0+)
    ollama_plain     = ChatOllama(...)                       ← rate-limit forced-final
 
 4. agent_node function (closure):
    a. Count AI turns already in state
    b. is_final = (turns >= MAX_ITERATIONS=14)
    c. If is_final: inject "provide your final answer now" message
-   d. Choose primary/fallback based on is_final and groq_rate_limited
-   e. Try Groq → on 429: try Ollama → on other error: retry Groq plain
+   d. LLM selection:
+      - is_final=True  → groq_plain  / ollama_plain
+      - turn 0         → groq_with_tools_required / ollama_with_tools
+      - turn 1+        → groq_with_tools / ollama_with_tools
+   e. Try Groq → on 429: try Ollama → on other error: retry with tools (turn 0) or plain (turn 1+)
 
 5. graph = StateGraph(AgentState)
    graph.add_node("agent", agent_node)
@@ -1041,13 +1054,18 @@ Returns `True` if the exception message contains `"429"`, `"rate_limit"`, `"rate
 **LLM selection logic in `agent_node`:**
 
 ```
-                is_final=False          is_final=True
-               ┌───────────────────┐   ┌──────────────────┐
-No rate limit  │ groq_with_tools   │   │ groq_plain        │
-               └───────────────────┘   └──────────────────┘
-               ┌───────────────────┐   ┌──────────────────┐
-Rate limited   │ ollama_with_tools │   │ ollama_plain      │
-               └───────────────────┘   └──────────────────┘
+                Turn 0                  Turn 1+             is_final=True
+               ┌─────────────────────┐ ┌─────────────────┐ ┌──────────────────┐
+No rate limit  │ groq_with_tools_req │ │ groq_with_tools │ │ groq_plain        │
+               │ (tool_choice=req'd) │ │                 │ │                  │
+               └─────────────────────┘ └─────────────────┘ └──────────────────┘
+               ┌─────────────────────┐ ┌─────────────────┐ ┌──────────────────┐
+Rate limited   │ ollama_with_tools   │ │ ollama_with_tools│ │ ollama_plain      │
+               └─────────────────────┘ └─────────────────┘ └──────────────────┘
+
+Non-429 error fallback:
+  Turn 0  → retry with groq_with_tools (tools still available)
+  Turn 1+ → retry with groq_plain (force final answer)
 ```
 
 ### `_TOOL_LEAK` Regex and `_sanitize_answer(text)`
@@ -1294,7 +1312,117 @@ Manages the main chat panel:
 
 ---
 
-## 14. Data Schemas Reference
+## 14. observability/trulens_setup.py — RAG Observability
+
+**Purpose:** TruLens 1.5.3 RAG Triad evaluation. Records every agent query post-hoc and evaluates three quality metrics asynchronously via a custom Groq→Ollama LLM provider.
+
+### Module-level Constants
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `EVAL_MODEL_GROQ` | `"llama-3.1-8b-instant"` | Lighter Groq model for scoring (saves tokens vs. main LLM) |
+| `CONTEXT_TOOLS` | `{"search_rfc", "search_trace", "search_docs", "cross_reference", "diagnose_sip_error"}` | Tool names whose `result_preview` counts as retrieved context |
+| `_DB_PATH` | `<project_root>/trulens_eval.db` | SQLite database for all TruLens records and scores |
+
+### Class: `GroqOllamaProvider(LLMProvider)`
+
+Extends `LLMProvider` directly — no dependency on `trulens-providers-openai`.
+
+**Why not `trulens-providers-openai`?** That package imports `from langchain.schema import Generation` which was removed in `langchain>=1.0`. The custom provider avoids this broken dependency.
+
+```
+GroqOllamaProvider
+├── _create_chat_completion(prompt, messages, ...) → str
+│     ├── Build OpenAI client pointing at Groq API
+│     ├── client.chat.completions.create(model=EVAL_MODEL_GROQ, ...)
+│     └── On HTTP 429: rebuild client pointing at Ollama, retry
+│
+├── generate_score(system_prompt, user_prompt, min, max, temperature) → float
+│     ├── Call _create_chat_completion(messages)
+│     ├── re_configured_rating(response, min, max) → raw int score
+│     └── return (score - min) / (max - min)      ← normalise to [0, 1]
+│
+├── generate_score_and_reasons(system_prompt, user_prompt, ...) → (float, dict)
+│     ├── Call _create_chat_completion(messages)
+│     ├── re_configured_rating(response, min, max) → score
+│     └── return (normalised, {"reason": raw_response})
+│
+└── groundedness_measure_with_cot_reasons(source, statement, ...) → (float, dict)
+      ├── Normalise source: join list → plain string
+      ├── sent_tokenize(statement) → hypotheses
+      ├── Filter trivial sentences (< 5 words)
+      ├── For each hypothesis:
+      │     generate_score(single_integer_prompt, premise=source, hypothesis=h)
+      └── return (mean_score, {"reason": "Avg groundedness over N sentences"})
+```
+
+**Why override `groundedness_measure_with_cot_reasons`?**  
+The parent method's `_prompts.LLM_GROUNDEDNESS_USER` template asks the LLM to produce scores for multiple criteria in one block. `re_configured_rating` returns 0 when it finds multiple valid integers in the response ("Multiple valid rating values found"). The override uses a single-integer prompt per hypothesis, guaranteeing exactly one parseable score.
+
+### Class: `SIPAssistantApp`
+
+A **pure recording shell** — contains no agent logic. `app.py` runs `AgentOrchestrator` as always, then calls `SIPAssistantApp.query()` with the pre-computed result for TruLens to record.
+
+```
+SIPAssistantApp
+├── @instrument _extract_contexts(contexts: list) → list
+│     └── pass-through; TruLens captures rets[:] as the context selector
+│
+└── @instrument query(question, answer, contexts) → str
+      ├── self._extract_contexts(contexts)
+      └── return answer    ← TruLens records input=question, output=answer
+```
+
+**Why separate agent from recording?**  
+Embedding the agent inside an `@instrument`-decorated method caused TruLens to recursively instrument LangGraph internals, disrupting the LangGraph state machine and producing empty `reasoning_trace` lists.
+
+### `get_tru_session() → TruSession`
+
+Singleton. Creates a `TruSession(database_url=f"sqlite:///{_DB_PATH}")` on first call and calls `session.start_evaluator()` to launch the background scoring thread. Returns the cached session on subsequent calls.
+
+### `setup_trulens() → (SIPAssistantApp, TruCustomApp, TruSession)`
+
+Creates all TruLens components:
+
+```
+1. session = get_tru_session()
+2. provider = GroqOllamaProvider()
+3. Three Feedback objects (DEFERRED mode):
+   f_answer_relevance   → provider.relevance
+                          .on(query.args.question) .on(query.rets)
+   f_context_relevance  → provider.context_relevance
+                          .on(query.args.question) .on(_extract_contexts.rets[:])
+                          .aggregate(np.mean)
+   f_groundedness       → provider.groundedness_measure_with_cot_reasons
+                          .on(_extract_contexts.rets[:].collect()) .on(query.rets)
+4. sip_app = SIPAssistantApp()
+5. tru_recorder = TruCustomApp(sip_app, app_name="sip-rfc-rag", app_version="v1",
+                                feedbacks=[...], feedback_mode=FeedbackMode.DEFERRED)
+6. return (sip_app, tru_recorder, session)
+```
+
+### Integration in `app.py`
+
+```python
+# After AgentOrchestrator(vs).run() returns:
+result = AgentOrchestrator(vs).run(query, ...)
+
+# Extract plain-text contexts from tool JSON results
+contexts = [parse_json_to_text(s["result_preview"])
+            for s in result["reasoning_trace"]
+            if s["tool"] in CONTEXT_TOOLS]
+
+# Record with TruLens (best-effort, never blocks response)
+sip_app, tru_recorder, _ = _get_trulens_components()
+with tru_recorder:
+    sip_app.query(query, result["answer"], contexts)
+```
+
+`_get_trulens_components()` is `@st.cache_resource` with no arguments — the `SIPAssistantApp` and `TruCustomApp` are created once per Streamlit process.
+
+---
+
+## 15. Data Schemas Reference
 
 ### ChromaDB Collection: `sip_rfcs`
 
@@ -1382,9 +1510,35 @@ Per document:
 }
 ```
 
+### TruLens Evaluation DB (`trulens_eval.db`)
+
+```
+Table: trulens_records
+  record_id       UUID
+  app_id          "sip-rfc-rag:v1"
+  ts              timestamp
+  record_json     JSON blob (instrumented call tree)
+  tags            ""
+  meta            "{}"
+
+Table: trulens_feedbacks
+  feedback_result_id  UUID
+  record_id           FK → trulens_records
+  feedback_definition_id  FK → trulens_feedback_defs
+  name            "Answer Relevance" | "Context Relevance" | "Groundedness"
+  status          "pending" | "running" | "done" | "failed"
+  result          float (0.0–1.0) or NULL
+  error           traceback string or NULL
+  calls_json      JSON (intermediate scoring calls)
+
+Table: trulens_feedback_defs
+  feedback_definition_id  UUID
+  feedback_json   JSON (serialised Feedback object)
+```
+
 ---
 
-## 15. Inter-Module Call Flow Diagrams
+## 16. Inter-Module Call Flow Diagrams
 
 ### A. RFC Indexing Flow (first startup or Re-index)
 

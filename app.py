@@ -666,6 +666,12 @@ def _get_vector_store():
     return VectorStore()
 
 
+@st.cache_resource(show_spinner=False)
+def _get_trulens_components():
+    from observability.trulens_setup import setup_trulens
+    return setup_trulens()
+
+
 def _ensure_rfc_index(vs) -> None:
     if vs.rfc_count() > 0:
         return
@@ -993,6 +999,46 @@ def _render_sidebar(vs):
         else:
             st.caption("No documents uploaded yet.")
 
+        # ── Observability (TruLens) ───────────────────────────────────────────
+        st.divider()
+        st.markdown(
+            '<div class="section-pill" style="background:rgba(139,92,246,0.1);'
+            'color:#7c3aed;border:1px solid rgba(139,92,246,0.3)">📊 Observability</div>',
+            unsafe_allow_html=True,
+        )
+        try:
+            from observability.trulens_setup import get_tru_session
+            _tru = get_tru_session()
+            _lb = _tru.get_leaderboard()
+            if not _lb.empty:
+                _score_cols = ["Answer Relevance", "Context Relevance", "Groundedness"]
+                _cols = st.columns(3)
+                for _col, _metric in zip(_cols, _score_cols):
+                    _val = _lb[_metric].mean() if _metric in _lb.columns else None
+                    _col.metric(
+                        _metric.split()[0],
+                        f"{_val:.2f}" if _val is not None else "—",
+                    )
+                _n = int(_lb["n_records"].sum()) if "n_records" in _lb.columns else "?"
+                st.caption(f"{_n} queries evaluated · RAG Triad")
+            else:
+                st.caption("No evaluations yet — ask a question to start.")
+        except Exception:
+            st.caption("TruLens observability active.")
+
+        if st.button("🖥️ TruLens Dashboard", use_container_width=True, key="trulens_dash"):
+            import subprocess as _sp, sys as _sys
+            _cwd = os.path.dirname(os.path.abspath(__file__))
+            _script = (
+                f"import os; os.chdir(r'{_cwd}'); "
+                "from observability.trulens_setup import get_tru_session; "
+                "get_tru_session().run_dashboard(port=8502, force=True)"
+            )
+            _sp.Popen([_sys.executable, "-c", _script])
+            st.session_state.trulens_dashboard_launched = True
+        if st.session_state.get("trulens_dashboard_launched"):
+            st.success("Dashboard → [http://localhost:8502](http://localhost:8502)")
+
         # ── Clear chat ────────────────────────────────────────────────────────
         st.divider()
         if st.button("🧹 Clear chat history", use_container_width=True):
@@ -1150,16 +1196,49 @@ def main():
 
         with st.chat_message("assistant", avatar="🤖"):
             with st.spinner(spinner_label):
-                from agent.orchestrator import AgentOrchestrator
                 try:
                     _t0 = time.perf_counter()
                     docs_info = vs.list_docs() if vs.doc_count() > 0 else None
+                    from agent.orchestrator import AgentOrchestrator
                     result = AgentOrchestrator(vs).run(
                         query,
                         trace_active=st.session_state.get("trace_loaded", False),
                         docs_info=docs_info,
                     )
                     _elapsed = time.perf_counter() - _t0
+                    # Record with TruLens post-hoc (best effort — never blocks the response)
+                    try:
+                        import json as _json
+                        from observability.trulens_setup import CONTEXT_TOOLS
+
+                        def _context_text(preview: str) -> str:
+                            """Extract readable RFC text from tool result JSON."""
+                            try:
+                                data = _json.loads(preview)
+                                if "results" in data:
+                                    return "\n\n".join(
+                                        f"{r.get('source','')}: {r.get('content','')}"
+                                        for r in data["results"] if r.get("content")
+                                    )
+                                if "definition" in data:
+                                    return str(data["definition"])
+                            except Exception:
+                                pass
+                            return preview
+
+                        _sip_app, _tru_recorder, _ = _get_trulens_components()
+                        _contexts = [
+                            _context_text(s["result_preview"])
+                            for s in result.get("reasoning_trace", [])
+                            if s.get("tool") in CONTEXT_TOOLS and s.get("result_preview")
+                        ]
+                        _contexts = [c for c in _contexts if c.strip()]
+                        with _tru_recorder:
+                            _sip_app.query(query, result.get("answer", ""), _contexts)
+                    except Exception as _tru_exc:
+                        logging.getLogger(__name__).warning(
+                            "TruLens recording failed: %s", _tru_exc
+                        )
                 except Exception as exc:
                     error_msg = f"Agent error: {exc}"
                     st.session_state.messages.append(
