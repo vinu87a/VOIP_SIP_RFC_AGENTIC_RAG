@@ -10,23 +10,23 @@ Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, **Streamlit**,
 
 **Landing page** — new sidebar order: Brand → Observability scores → SIP Trace → Document Library → RFC KB
 
-![Landing page](docs/screenshots/01_landing.png)
+![Landing page](docs/screenshots/new_01_landing.png)
 
 **Sidebar (top)** — Brand header, colour-coded RAG Triad scores, TruLens Dashboard button, SIP Trace and Document Library sections
 
-![Sidebar top — Observability + Trace + Docs](docs/screenshots/02_sidebar_top.png)
+![Sidebar top — Observability + Trace + Docs](docs/screenshots/new_02_sidebar_top.png)
 
 **Chat response** — structured answer with inline RFC citations and Agent Reasoning expander
 
-![Chat answer with reasoning trace](docs/screenshots/03_answer_with_reasoning.png)
+![Chat answer with reasoning trace](docs/screenshots/new_03_answer_with_reasoning.png)
 
 **Observability scores** — Answer Relevance (green ≥ 0.8), Context Relevance and Groundedness (amber ≥ 0.5)
 
-![Sidebar observability scores](docs/screenshots/04_sidebar_observability.png)
+![Sidebar observability scores](docs/screenshots/new_04_sidebar_observability.png)
 
 **RFC Knowledge Base** — 25 RFCs organised by category with Re-index button
 
-![RFC Knowledge Base sidebar](docs/screenshots/05_sidebar_rfc_kb.png)
+![RFC Knowledge Base sidebar](docs/screenshots/new_05_sidebar_rfc_kb.png)
 
 ---
 
