@@ -16,9 +16,13 @@ Built with **LangGraph**, **Groq (Llama 4 Scout)**, **ChromaDB**, **Streamlit**,
 
 ![RFC Sidebar](docs/screenshots/02_sidebar_rfcs.png)
 
-**Chat response** — structured answer with inline RFC citations and response time
+**Chat response** — structured answer with inline RFC citations, Agent Reasoning expander, and response time
 
 ![Chat response with RFC citations](docs/screenshots/04_answer_tall.png)
+
+**Observability sidebar** — live RAG Triad scores (Answer Relevance, Context Relevance, Groundedness) and TruLens Dashboard button
+
+![Observability sidebar with RAG Triad scores](docs/screenshots/03_observability_sidebar.png)
 
 ---
 
